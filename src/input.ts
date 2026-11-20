@@ -13,11 +13,10 @@ export function isSpace(byte: number | undefined): boolean {
     return byte === 0x20 || byte === 0x09;
 }
 
-export class Input {
+export class Input implements AsyncDisposable {
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
     protected chunk: Uint8Array;
     protected offset = 0;
-    protected ended = false;
     protected disposal?: Promise<void>;
 
     public constructor(stream?: ReadableStream<Uint8Array>, initial = empty) {
@@ -47,20 +46,10 @@ export class Input {
         if (this.disposal) throw new TypeError('The multipart parser is closed');
         this.chunk = empty;
         this.offset = 0;
-        while (this.reader && !this.ended) {
-            let result: ReadableStreamReadResult<Uint8Array>;
-            try {
-                result = await this.reader.read();
-            } catch (reason) {
-                this.ended = true;
-                throw reason;
-            }
+        while (this.reader) {
+            const { value, done } = await this.reader.read();
             if (this.disposal) throw new TypeError('The multipart parser is closed');
-            const { value, done } = result;
-            if (done) {
-                this.ended = true;
-                break;
-            }
+            if (done) break;
             if (getTypedArrayName.call(value) !== 'Uint8Array')
                 throw new TypeError('Expected a Uint8Array chunk in the multipart body');
             if (value.byteLength) {
@@ -81,7 +70,7 @@ export class Input {
         if (!reader) return;
         this.reader = undefined;
         try {
-            if (!this.ended) await reader.cancel();
+            await reader.cancel().catch(() => { });
         } finally {
             reader.releaseLock();
         }

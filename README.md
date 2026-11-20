@@ -78,6 +78,6 @@ You can explicitly skip a part by awaiting `return()` on its `chunks` async iter
 
 Once you call `entry.next()` or `entry.return()`, read the entry's body to completion or await `entry.return()` before advancing the outer iterator. Calling `entry.throw(reason)` on an unfinished entry marks it as failed and rejects with `reason`. The next call to `parser.next()` reports that failure. Calling `entry.return()` on a failed entry resolves with `done: true` and preserves the failure for the parser.
 
-The request body must supply `Uint8Array` chunks. Reading another chunk type rejects with a `TypeError`. The outer parser owns the body reader until the parser finishes or is closed. Leaving the outer `for await` loop early closes the parser. When iterating manually, close it with `await parser.return()` in a `finally` block or use `await using`. Closing the parser early cancels an active body, and normal completion reads to EOF.
+The request body must supply `Uint8Array` chunks. Reading another chunk type rejects with a `TypeError`. The outer parser owns the body reader until the parser finishes or is closed. Leaving the outer `for await` loop early closes the parser. When iterating manually, close it with `await parser.return()` in a `finally` block or use `await using`. Normal completion reads to EOF. Closing the parser early waits for the request body's cancellation to settle and then releases the reader lock. The parser ignores cancellation failures.
 
 If `parser.next()` is waiting for input, a concurrent `parser.return()` waits for that call to settle.
