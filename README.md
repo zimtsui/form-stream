@@ -1,8 +1,8 @@
 # form-stream
 
-## Examples
+[![NPM Version](https://img.shields.io/npm/v/@zimtsui/form-stream?style=flat-square)](https://www.npmjs.com/package/@zimtsui/form-stream)
 
-The request must have a `multipart/form-data` Content-Type and a body.
+## Examples
 
 ```ts
 import * as FormStream from '@zimtsui/form-stream';
