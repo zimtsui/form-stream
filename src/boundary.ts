@@ -59,11 +59,19 @@ export class Boundary {
         const input = this.input;
         // A delimiter at byte zero has an implicit leading CRLF.
         let matched = 2;
+        let startsAtByteZero = true;
         while (input.getByte() !== undefined || await input.fill()) {
+            const previous = matched;
+            const offset = input.getOffset();
             matched = this.scan(input.getChunk().length, matched);
+            startsAtByteZero &&= matched === previous + input.getOffset() - offset;
             if (matched === this.pattern.length) {
                 const delimiter = await this.suffix();
                 if (delimiter === 'next') return delimiter;
+                // FormData can serialize an empty form as a standalone closing delimiter.
+                if (startsAtByteZero && delimiter === 'close' && await input.peek() === undefined)
+                    return delimiter;
+                startsAtByteZero = false;
                 matched = delimiter === 'close' ? 2 : 0;
             }
         }

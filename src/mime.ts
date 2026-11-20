@@ -4,6 +4,9 @@ import type { TransferEncoding } from './encoding.ts';
 import { CR, LF, type Input, isSpace, outputChunkSize } from './input.ts';
 import type { Entry } from './types.ts';
 
+export class ParameterContinuationError extends RangeError { }
+export class MultipartMixedError extends RangeError { }
+
 const quote = 0x22;
 const backslash = 0x5c;
 const openParen = 0x28;
@@ -117,7 +120,7 @@ class MimeValue {
         return byte;
     }
 
-    public async token(limit: number): Promise<string> {
+    public async token(limit = Infinity): Promise<string> {
         if (await this.skipSpace() === undefined) throw new SyntaxError('Expected a MIME token');
         return readWord(this.input, isToken, limit);
     }
@@ -128,7 +131,9 @@ class MimeValue {
             if (byte === undefined) return;
             if (byte !== 0x3b) throw new SyntaxError('Expected ";" before a MIME parameter');
             this.input.advance();
-            const name = await this.token('filename'.length);
+            const name = await this.token();
+            if (/^(?:name|filename)\*(?:0|[1-9][0-9]*)\*?$/.test(name))
+                throw new ParameterContinuationError('Unsupported Content-Disposition parameter continuation: ' + name);
             if (await this.skipSpace() !== 0x3d) throw new SyntaxError('Expected "=" after a MIME parameter name');
             this.input.advance();
 
@@ -212,7 +217,7 @@ export function readBoundary(contentType: MIMEType): string {
 
 async function readContentType(header: MimeValue): Promise<MIMEType> {
     const chunks: Uint8Array[] = [];
-    for await (const chunk of header.line()) chunks.push(chunk);
+    for await (const chunk of header.line()) chunks.push(chunk.slice());
     const value = Buffer.concat(chunks).toString('latin1');
     try {
         return new MIMEType(value);
@@ -246,6 +251,8 @@ export async function* readMetadata(input: Input): AsyncGenerator<Entry.Part.Nam
             case 'content-type':
                 if (contentType) throw new SyntaxError('Duplicate Content-Type');
                 contentType = await readContentType(value);
+                if (contentType.essence === 'multipart/mixed')
+                    throw new MultipartMixedError('Unsupported multipart/mixed form entry');
                 break;
             case transferEncoding:
                 if (encoding !== undefined) throw new SyntaxError('Duplicate Content-Transfer-Encoding');
