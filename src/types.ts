@@ -1,3 +1,6 @@
+import { MIMEType } from 'node:util';
+
+
 export type Entry = AsyncGenerator<Entry.Part, void, void>;
 
 export namespace Entry {
@@ -14,6 +17,7 @@ export namespace Entry {
         }
         export interface Body {
             type: 'body';
+            contentType: MIMEType;
             chunks: ReadableStream<Uint8Array>;
         }
     }

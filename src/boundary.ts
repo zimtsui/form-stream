@@ -63,8 +63,8 @@ export class Boundary {
             matched = this.scan(input.getChunk().length, matched);
             if (matched === this.pattern.length) {
                 const delimiter = await this.suffix();
-                if (delimiter !== undefined) return delimiter;
-                matched = 0;
+                if (delimiter === 'next') return delimiter;
+                matched = delimiter === 'close' ? 2 : 0;
             }
         }
         throw new SyntaxError('Missing first multipart delimiter');
@@ -72,7 +72,10 @@ export class Boundary {
 
     public async *body(): AsyncGenerator<Uint8Array, Delimiter, void> {
         const input = this.input;
-        let matched = 0;
+        // In a header-only part, the CRLF consumed after the headers is
+        // already the leading CRLF of the delimiter.
+        let matched = 2;
+        let consumedPrefix = matched;
         while (input.getByte() !== undefined || await input.fill()) {
             const chunk = input.getChunk();
             const offset = input.getOffset();
@@ -84,13 +87,18 @@ export class Boundary {
             const length = previous + input.getOffset() - offset - matched;
             if (length > 0) {
                 const prefixLength = Math.min(previous, length);
-                if (prefixLength === 0) {
-                    yield chunk.slice(offset, offset + length);
-                } else {
-                    const output = new Uint8Array(length);
-                    output.set(this.pattern.subarray(0, prefixLength));
-                    output.set(chunk.subarray(offset, offset + length - prefixLength), prefixLength);
-                    yield output;
+                const prefixStart = Math.min(consumedPrefix, prefixLength);
+                consumedPrefix -= prefixStart;
+                const end = offset + length - prefixLength;
+                if (length > prefixStart) {
+                    if (prefixLength === prefixStart) {
+                        yield chunk.slice(offset, end);
+                    } else {
+                        const output = new Uint8Array(length - prefixStart);
+                        output.set(this.pattern.subarray(prefixStart, prefixLength));
+                        output.set(chunk.subarray(offset, end), prefixLength - prefixStart);
+                        yield output;
+                    }
                 }
             }
             if (matched === this.pattern.length) {

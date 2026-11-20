@@ -1,14 +1,12 @@
+import type { MIMEType } from 'node:util';
 import { Boundary, type Delimiter } from './boundary.ts';
+import { decodeBody } from './encoding.ts';
 import { StreamInput } from './input.ts';
 import { readBoundary, readMetadata } from './mime.ts';
 import type { Entry } from './types.ts';
 
-declare const ReadableStream: typeof globalThis.ReadableStream & {
-    from<T>(source: AsyncIterable<T>): ReadableStream<T>;
-};
-
-export async function* parse(contentType: string, body: ReadableStream<Uint8Array>): AsyncGenerator<Entry, void, void> {
-    const boundaryValue = await readBoundary(contentType);
+export async function* parse(contentType: MIMEType, body: ReadableStream<Uint8Array>): AsyncGenerator<Entry, void, void> {
+    const boundaryValue = readBoundary(contentType);
     await using input = new StreamInput(body);
     const boundary = new Boundary(boundaryValue, input);
     let nextDelimiter: Delimiter | undefined = await boundary.first();
@@ -18,10 +16,8 @@ export async function* parse(contentType: string, body: ReadableStream<Uint8Arra
     }
 
     async function* readEntry(): Entry {
-        for await (const { name, source } of readMetadata(input)) {
-            yield { type: name, chunks: ReadableStream.from(source) };
-        }
-        yield { type: 'body', chunks: ReadableStream.from(readBody()) };
+        const { contentType, encoding } = yield* readMetadata(input);
+        yield { type: 'body', contentType, chunks: ReadableStream.from(decodeBody(readBody(), encoding)) };
     }
 
     while (nextDelimiter === 'next') {

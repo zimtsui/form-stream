@@ -1,4 +1,8 @@
+import { Buffer } from 'node:buffer';
+import { MIMEType } from 'node:util';
+import type { TransferEncoding } from './encoding.ts';
 import { BufferInput, CR, LF, type Input, isSpace, outputChunkSize } from './input.ts';
+import type { Entry } from './types.ts';
 
 const quote = 0x22;
 const backslash = 0x5c;
@@ -6,11 +10,17 @@ const openParen = 0x28;
 const closeParen = 0x29;
 const tspecials = '()<>@,;:\\"/[]?=';
 const disposition = 'content-disposition';
+const transferEncoding = 'content-transfer-encoding';
 
-interface Parameter<Name extends string> {
+interface Parameter<Name extends string = string> {
     name: Name;
     source: AsyncGenerator<Uint8Array, void, void>;
-};
+}
+
+interface BodyMetadata {
+    contentType: MIMEType;
+    encoding: TransferEncoding;
+}
 
 function isToken(byte: number): boolean {
     return byte > 0x20 && byte < 0x7f && !tspecials.includes(String.fromCharCode(byte));
@@ -115,19 +125,20 @@ class MimeValue {
         return readWord(this.input, isToken, limit);
     }
 
-    public async *parameters<Name extends string>(...names: Name[]): AsyncGenerator<Parameter<Name>, void, void> {
+    public parameters(): AsyncGenerator<Parameter, void, void>;
+    public parameters<Name extends string>(...names: Name[]): AsyncGenerator<Parameter<Name>, void, void>;
+    public async *parameters(...names: string[]): AsyncGenerator<Parameter, void, void> {
         for (;;) {
             const byte = await this.skipSpace();
             if (byte === undefined) return;
             if (byte !== 0x3b) throw new SyntaxError('Expected ";" before a MIME parameter');
             this.input.advance();
-            const attribute = await this.token(8);
+            const name = await this.token(names.length ? 8 : Infinity);
             if (await this.skipSpace() !== 0x3d) throw new SyntaxError('Expected "=" after a MIME parameter name');
             this.input.advance();
 
-            const name = names.find(name => name === attribute);
             const source = this.parameterValue();
-            if (name !== undefined) {
+            if (!names.length || names.includes(name)) {
                 yield { name, source };
             } else {
                 for await (const _ of source) { }
@@ -183,63 +194,106 @@ class MimeValue {
         }
     }
 
-    public async skipLine(): Promise<void> {
+    public async *line(): AsyncGenerator<Uint8Array, void, void> {
         while (await this.peek() !== undefined) {
             const chunk = this.input.getChunk();
             const offset = this.input.getOffset();
             let end = offset + 1;
             while (end < chunk.length && chunk[end] !== CR && chunk[end] !== LF) end++;
             this.input.advance(end - offset);
+            yield chunk.subarray(offset, end);
         }
     }
 }
 
-export async function readBoundary(contentType: string): Promise<string> {
-    const input = new BufferInput(new TextEncoder().encode(contentType));
-    const value = new MimeValue(input, false);
-    if (await value.token(9) !== 'multipart' || await value.skipSpace() !== 0x2f)
+export function readBoundary(contentType: MIMEType): string {
+    if (contentType.essence !== 'multipart/form-data')
         throw new SyntaxError('Expected a multipart/form-data Content-Type');
-    input.advance();
-    if (await value.token(9) !== 'form-data') throw new SyntaxError('Expected a multipart/form-data Content-Type');
-
-    let boundary: string | undefined;
-    for await (const { source } of value.parameters('boundary')) {
-        if (boundary !== undefined) throw new SyntaxError('Duplicate multipart boundary');
-        boundary = '';
-        for await (const chunk of source) {
-            if (boundary.length + chunk.length > 70) throw new SyntaxError('Multipart boundary exceeds 70 bytes');
-            boundary += String.fromCharCode(...chunk);
-        }
-    }
-    if (!boundary || boundary.endsWith(' ') || /[^0-9A-Za-z'()+_,.\/:=? -]/.test(boundary))
+    const boundary = contentType.params.get('boundary');
+    if (!boundary || boundary.length > 70 || boundary.endsWith(' ') || /[^0-9A-Za-z'()+_,.\/:=? -]/.test(boundary))
         throw new SyntaxError('Missing or invalid multipart boundary');
     return boundary;
 }
 
-export async function* readMetadata(input: Input): AsyncGenerator<Parameter<'name' | 'filename'>, void, void> {
+async function readContentType(header: MimeValue): Promise<MIMEType> {
+    // Finish reading the header line before validating its value so that
+    // invalid Content-Type syntax never consumes the following header.
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of header.line()) chunks.push(chunk);
+    const input = new BufferInput(Buffer.concat(chunks));
+    const value = new MimeValue(input, false);
+    let normalized: string;
+    try {
+        const type = await value.token(Infinity);
+        if (await value.skipSpace() !== 0x2f) throw new SyntaxError('Expected "/" in Content-Type');
+        input.advance();
+        normalized = `${type}/${await value.token(Infinity)}`;
+        for await (const { name, source } of value.parameters()) {
+            let parameter = '';
+            for await (const chunk of source) parameter += String.fromCharCode(...chunk);
+            normalized += `;${name}="${parameter.replace(/["\\]/g, '\\$&')}"`;
+        }
+    } catch (error) {
+        if (error instanceof SyntaxError) return new MIMEType('text/plain');
+        throw error;
+    }
+    try {
+        return new MIMEType(normalized);
+    } catch (error) {
+        if (error instanceof TypeError) return new MIMEType('application/octet-stream');
+        throw error;
+    }
+}
+
+export async function* readMetadata(input: Input): AsyncGenerator<Entry.Part.Name | Entry.Part.Filename, BodyMetadata, void> {
     let hasDisposition = false;
+    let contentType: MIMEType | undefined;
+    let encoding: string | undefined;
     const seen = { name: false, filename: false };
     while ((input.getByte() ?? await input.peek()) !== CR) {
-        const header = await readWord(input, isHeaderName, disposition.length);
+        const header = await readWord(input, isHeaderName, transferEncoding.length);
         if ((input.getByte() ?? await input.peek()) !== 0x3a) throw new SyntaxError('Expected ":" after a MIME header name');
         input.advance();
         const value = new MimeValue(input, true);
-        if (header !== disposition) {
-            await value.skipLine();
-            continue;
-        }
-        if (hasDisposition) throw new SyntaxError('Duplicate Content-Disposition');
-        hasDisposition = true;
-        if (await value.token(9) !== 'form-data') throw new SyntaxError('Expected Content-Disposition: form-data');
-        for await (const parameter of value.parameters('name', 'filename')) {
-            const { name } = parameter;
-            if (seen[name]) throw new SyntaxError(`Duplicate ${name} parameter`);
-            seen[name] = true;
-            yield parameter;
+        switch (header) {
+            case disposition:
+                if (hasDisposition) throw new SyntaxError('Duplicate Content-Disposition');
+                hasDisposition = true;
+                if (await value.token(9) !== 'form-data') throw new SyntaxError('Expected Content-Disposition: form-data');
+                for await (const { name, source } of value.parameters('name', 'filename')) {
+                    if (seen[name]) throw new SyntaxError(`Duplicate ${name} parameter`);
+                    seen[name] = true;
+                    yield { type: name, chunks: ReadableStream.from(source) };
+                }
+                break;
+            case 'content-type':
+                if (contentType) throw new SyntaxError('Duplicate Content-Type');
+                contentType = await readContentType(value);
+                break;
+            case transferEncoding:
+                if (encoding !== undefined) throw new SyntaxError('Duplicate Content-Transfer-Encoding');
+                encoding = await value.token('quoted-printable'.length);
+                if (await value.skipSpace() !== undefined) throw new SyntaxError('Invalid Content-Transfer-Encoding');
+                break;
+            default:
+                for await (const _ of value.line()) { }
         }
     }
     input.advance();
     if ((input.getByte() ?? await input.peek()) !== LF) throw new SyntaxError('Expected CRLF after MIME headers');
     input.advance();
     if (!seen.name) throw new SyntaxError('Expected a Content-Disposition name parameter');
+    switch (encoding) {
+        case 'base64':
+        case 'quoted-printable':
+            if (contentType?.type === 'multipart') throw new SyntaxError('Invalid transfer encoding for a multipart entity');
+            return { contentType: contentType ?? new MIMEType('text/plain'), encoding };
+        case undefined:
+        case 'binary':
+        case '7bit':
+        case '8bit':
+            return { contentType: contentType ?? new MIMEType('text/plain'), encoding: 'identity' };
+        default:
+            return { contentType: new MIMEType('application/octet-stream'), encoding: 'identity' };
+    }
 }

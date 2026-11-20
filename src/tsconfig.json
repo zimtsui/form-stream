@@ -2,8 +2,8 @@
     "compilerOptions": {
         "module": "preserve",
         "moduleDetection": "force",
-        "lib": ["esnext", "dom"],
-        "types": [],
+        "lib": ["esnext"],
+        "types": ["node"],
         "sourceMap": true,
         "experimentalDecorators": true,
         "noUncheckedIndexedAccess": true,
