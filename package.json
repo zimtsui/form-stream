@@ -1,0 +1,20 @@
+{
+  "name": "@zimtsui/form-stream",
+  "version": "0.0.1",
+  "exports": "./build/form-stream.js",
+  "description": "",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc -b ./src/tsconfig.json",
+    "clean": "rm -rf ./build",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "author": "Zim",
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
