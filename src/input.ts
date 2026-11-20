@@ -1,9 +1,4 @@
 const empty = new Uint8Array(0);
-// Use the intrinsic typed-array name to recognize chunks from other realms.
-const getTypedArrayName = Object.getOwnPropertyDescriptor(
-    Object.getPrototypeOf(Uint8Array.prototype),
-    Symbol.toStringTag,
-)!.get!;
 
 export const CR = 0x0d;
 export const LF = 0x0a;
@@ -17,7 +12,6 @@ export class Input implements AsyncDisposable {
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
     protected chunk: Uint8Array;
     protected offset = 0;
-    protected disposal?: Promise<void>;
 
     public constructor(stream?: ReadableStream<Uint8Array>, initial = empty) {
         this.reader = stream?.getReader();
@@ -33,8 +27,6 @@ export class Input implements AsyncDisposable {
     }
 
     public advance(length = 1): void {
-        if (!Number.isInteger(length) || length < 0 || length > this.chunk.length - this.offset)
-            throw new RangeError('Cannot advance beyond the remaining input chunk');
         this.offset += length;
     }
 
@@ -43,15 +35,11 @@ export class Input implements AsyncDisposable {
     }
 
     public async fill(): Promise<boolean> {
-        if (this.disposal) throw new TypeError('The multipart parser is closed');
         this.chunk = empty;
         this.offset = 0;
         while (this.reader) {
             const { value, done } = await this.reader.read();
-            if (this.disposal) throw new TypeError('The multipart parser is closed');
             if (done) break;
-            if (getTypedArrayName.call(value) !== 'Uint8Array')
-                throw new TypeError('Expected a Uint8Array chunk in the multipart body');
             if (value.byteLength) {
                 this.chunk = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
                 return true;
@@ -65,22 +53,13 @@ export class Input implements AsyncDisposable {
         return this.getByte();
     }
 
-    protected async dispose(): Promise<void> {
+    public async [Symbol.asyncDispose](): Promise<void> {
         const reader = this.reader;
-        if (!reader) return;
         this.reader = undefined;
-        try {
-            await reader.cancel().catch(() => { });
-        } finally {
-            reader.releaseLock();
-        }
-    }
-
-    public [Symbol.asyncDispose](): Promise<void> {
-        if (this.disposal) return this.disposal;
         this.chunk = empty;
         this.offset = 0;
-        // Cache disposal before invoking the stream's cancellation callback.
-        return this.disposal = Promise.resolve().then(() => this.dispose());
+        if (!reader) return;
+        await reader.cancel().catch(() => { });
+        reader.releaseLock();
     }
 }

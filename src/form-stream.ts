@@ -8,222 +8,111 @@ type PartSource = {
     source: (shouldEmit: () => boolean) => AsyncGenerator<Uint8Array, Delimiter | void, void>;
 };
 
-class PartStream {
-    public part: Entry.Part;
-    protected source?: ReturnType<PartSource['source']>;
-    protected controller!: ReadableStreamDefaultController<Uint8Array>;
-    protected pending?: Promise<void>;
-    protected skipping?: Promise<void>;
-    protected sourceResult?: IteratorReturnResult<Delimiter | void>;
-    protected failure?: { reason: unknown };
-    protected closed = false;
+function createPart({ type, source }: PartSource, onEnd: (value: Delimiter | void) => void) {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    let pending: Promise<void> | undefined;
+    let skipping = false;
+    let ended = false;
+    const output = source(() => !skipping);
 
-    public constructor({ type, source }: PartSource) {
-        this.source = source(() => {
-            if (this.failure) throw this.failure.reason;
-            return !this.closed;
-        });
-        const chunks = new ReadableStream<Uint8Array>({
-            start: controller => { this.controller = controller; },
-            pull: () => this.pending = this.read(),
-            cancel: () => {
-                this.closed = true;
-                return this.skip();
-            },
-        }, { highWaterMark: 0 });
-        this.part = { type, chunks };
-    }
-
-    public hasStarted(): boolean {
-        return this.pending !== undefined || this.skipping !== undefined;
-    }
-
-    public hasFailed(): boolean {
-        return this.failure !== undefined;
-    }
-
-    public getResult(): IteratorReturnResult<Delimiter | void> | undefined {
-        if (this.failure) throw this.failure.reason;
-        return this.sourceResult;
-    }
-
-    public getReachedDelimiter(): boolean {
-        return this.sourceResult?.value !== undefined;
-    }
-
-    protected close(): void {
-        if (this.closed) return;
-        this.closed = true;
-        this.controller.close();
-    }
-
-    protected async read(): Promise<void> {
-        if (!this.source) return;
-        try {
-            const result = await this.source.next();
-            if (this.failure) throw this.failure.reason;
-            if (result.done) {
-                this.source = undefined;
-                this.sourceResult = result;
-                this.close();
-            } else if (!this.closed) {
-                this.controller.enqueue(result.value);
-            }
-        } catch (reason) {
-            this.abort(reason);
-            throw this.failure ? this.failure.reason : reason;
+    async function read(): Promise<void> {
+        const result = await output.next();
+        if (result.done) {
+            ended = true;
+            onEnd(result.value);
+            if (!skipping) controller.close();
+        } else if (!skipping) {
+            controller.enqueue(result.value);
         }
     }
 
-    public skip(): Promise<void> {
-        return this.skipping ??= this.drain();
+    async function skip(): Promise<void> {
+        skipping = true;
+        if (pending) await pending;
+        if (!ended) await read();
     }
 
-    protected async drain(): Promise<void> {
-        this.close();
-        await this.pending;
-        while (!this.getResult()) await this.read();
-    }
-
-    public abort(reason: unknown): void {
-        if (this.sourceResult || this.failure) return;
-        this.failure = { reason };
-        this.source = undefined;
-        if (this.closed) return;
-        this.closed = true;
-        this.controller.error(reason);
-    }
+    const chunks = new ReadableStream<Uint8Array>({
+        start: value => { controller = value; },
+        pull: () => pending = read(),
+        cancel: skip,
+    }, { highWaterMark: 0 });
+    const part: Entry.Part = { type, chunks };
+    return {
+        part,
+        async finish(): Promise<boolean> {
+            if (!pending && !skipping) {
+                controller.close();
+                await skip();
+            }
+            return ended;
+        },
+    };
 }
 
-class EntryParts implements Entry {
-    protected metadata: ReturnType<typeof readMetadata>;
-    protected boundary: Boundary;
-    protected current?: PartStream;
-    protected failure?: { reason: unknown };
-    protected pending?: Promise<void>;
+async function* readPartSources(input: Input, boundary: Boundary): AsyncGenerator<PartSource, void, void> {
+    yield* readMetadata(input);
+    yield { type: 'body', source: boundary.body.bind(boundary) };
+}
 
-    public constructor(metadata: ReturnType<typeof readMetadata>, boundary: Boundary) {
-        this.metadata = metadata;
-        this.boundary = boundary;
+function createEntry(input: Input, boundary: Boundary) {
+    let started = false;
+    let initialSkip: Promise<void> | undefined;
+    let delimiter: Delimiter | undefined;
+
+    function saveDelimiter(value: Delimiter | void): void {
+        if (value !== undefined) delimiter = value;
     }
 
-    public [Symbol.asyncIterator](): this {
-        return this;
-    }
-
-    public hasStarted(): boolean {
-        return this.pending !== undefined;
-    }
-
-    public hasEnded(): boolean {
-        return this.failure !== undefined || this.current?.hasFailed() === true || this.current?.getReachedDelimiter() === true;
-    }
-
-    public getDelimiter(): Delimiter | void {
-        if (this.failure) throw this.failure.reason;
-        return this.current?.getResult()?.value;
-    }
-
-    protected enqueue<T>(operation: () => Promise<T>): Promise<T> {
-        // Serialize iterator calls while allowing return() before the first next().
-        const result = (this.pending ?? Promise.resolve()).then(operation);
-        this.pending = result.then(() => { }, () => { });
-        return result;
-    }
-
-    protected async nextPart(): Promise<PartStream> {
-        try {
-            const metadata = await this.metadata.next();
-            if (this.failure) throw this.failure.reason;
-            return this.current = new PartStream(metadata.done
-                ? { type: 'body', source: this.boundary.body.bind(this.boundary) }
-                : metadata.value);
-        } catch (reason) {
-            this.failure ??= { reason };
-            throw this.failure.reason;
+    async function* read(): AsyncGenerator<Entry.Part, void, Promise<void> | void> {
+        started = true;
+        let skip: Promise<void> | void = initialSkip;
+        if (skip) await skip;
+        for await (const definition of readPartSources(input, boundary)) {
+            if (skip) {
+                const result = await definition.source(() => false).next();
+                if (result.done) saveDelimiter(result.value);
+                continue;
+            }
+            const { part, finish } = createPart(definition, saveDelimiter);
+            skip = yield part;
+            if (skip) await skip;
+            // A failed read or cancellation leaves the part unfinished.
+            if (!await finish()) return;
         }
     }
 
-    protected async finishCurrentPart(): Promise<boolean> {
-        if (!this.current || this.current.getResult()) return true;
-        if (this.current.hasStarted()) return false;
-        await this.current.skip();
-        return true;
-    }
-
-    public next(): Promise<IteratorResult<Entry.Part, void>> {
-        return this.enqueue(async () => {
-            if (!await this.finishCurrentPart())
-                throw new TypeError('Consume or cancel the current part before requesting the next part');
-            if (this.getDelimiter() !== undefined) return { done: true, value: undefined };
-            const part = await this.nextPart();
-            return { done: false, value: part.part };
-        });
-    }
-
-    public return(value?: void | PromiseLike<void>): Promise<IteratorReturnResult<void>> {
-        return this.enqueue(async () => {
-            if (value !== undefined) {
-                try {
-                    await value;
-                } catch (reason) {
-                    this.abortAndThrow(reason);
-                }
-            }
-            if (this.failure || this.current?.hasFailed()) return { done: true, value: undefined };
-            if (!await this.finishCurrentPart())
-                throw new TypeError('Consume or cancel the current part before skipping the entry');
-            while (this.getDelimiter() === undefined) {
-                const part = await this.nextPart();
-                await part.skip();
-            }
+    const parts = read();
+    const entry = Object.assign(parts, {
+        async return(value?: void | PromiseLike<void>): Promise<IteratorReturnResult<void>> {
+            const skip = Promise.resolve(value);
+            // The first next() argument is ignored by a native generator.
+            if (!started) initialSkip = skip;
+            await parts.next(skip);
+            // A completed generator also ignores the argument.
+            await skip;
             return { done: true, value: undefined };
-        });
-    }
-
-    public throw(reason: unknown): Promise<never> {
-        return this.enqueue(async () => this.abortAndThrow(reason));
-    }
-
-    protected abortAndThrow(reason: unknown): never {
-        this.abort(reason);
-        throw reason;
-    }
-
-    public async [Symbol.asyncDispose](): Promise<void> {
-        await this.return();
-    }
-
-    protected abort(reason: unknown): void {
-        if (this.current?.getReachedDelimiter()) return;
-        this.failure ??= { reason };
-        this.current?.abort(this.failure.reason);
-    }
+        },
+    }) satisfies Entry;
+    return {
+        entry,
+        skipUntouched: () => started ? undefined : entry.return(),
+        getDelimiter: () => delimiter,
+    };
 }
 
 export async function* parse(contentType: string, body: ReadableStream<Uint8Array>): AsyncGenerator<Entry, void, void> {
     const boundaryValue = await readBoundary(contentType);
     await using input = new Input(body);
     const boundary = new Boundary(boundaryValue, input);
-    let delimiter = await boundary.first();
+    let delimiter: Delimiter | undefined = await boundary.first();
     while (delimiter === 'next') {
-        const entryParts = new EntryParts(readMetadata(input), boundary);
-        let returning = true;
-        try {
-            yield entryParts;
-            returning = false;
-        } catch (reason) {
-            returning = false;
-            throw reason;
-        } finally {
-            if (returning && entryParts.hasStarted() && !entryParts.hasEnded())
-                throw new TypeError('Consume the current entry or await its iterator return() before closing the parser');
-        }
-        if (!entryParts.hasStarted()) await entryParts.return();
-        const next = entryParts.getDelimiter();
-        if (next === undefined)
-            throw new TypeError('Consume the current entry or await its iterator return() before advancing');
-        delimiter = next;
+        const { entry, skipUntouched, getDelimiter } = createEntry(input, boundary);
+        yield entry;
+        await skipUntouched();
+        delimiter = getDelimiter();
     }
-    while (await input.fill()) { }
+    if (delimiter === 'close') {
+        while (await input.fill()) { }
+    }
 }
