@@ -13,6 +13,10 @@
     "clean": "rm -rf ./build",
     "prepack": "npm run clean && npm run build"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zimtsui/form-stream.git"
+  },
   "author": "Zim",
   "devDependencies": {
     "typescript": "^6.0.3"
