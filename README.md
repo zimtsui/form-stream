@@ -74,10 +74,12 @@ for await (const entry of parse(contentType, body)) {
 // { name: 'attachment', filename: 'example.bin', byteLength: 3 }
 ```
 
-You can explicitly skip a part by awaiting `return()` on its `chunks` async iterator or canceling the stream. To explicitly skip an entry, await `entry.return()`. Breaking out of the inner loop or disposing the entry with `await using` calls the same method. This method skips an untouched part automatically. If reading or canceling the current part has started and remains unfinished, `entry.return()` rejects with a `TypeError` and terminates parsing.
+You can explicitly skip a part by awaiting `return()` on its `chunks` async iterator or canceling the stream. To explicitly skip an entry, await `entry.return()`. Breaking out of the inner loop or disposing the entry with `await using` calls the same method. This method skips an untouched part automatically. If reading or canceling the current part has started and remains unfinished, `entry.return()` rejects with a `TypeError`.
 
 Once you call `entry.next()` or `entry.return()`, read the entry's body to completion or await `entry.return()` before advancing the outer iterator. Calling `entry.throw(reason)` on an unfinished entry marks it as failed and rejects with `reason`. The next call to `parser.next()` reports that failure. Calling `entry.return()` on a failed entry resolves with `done: true` and preserves the failure for the parser.
 
 The request body must supply `Uint8Array` chunks. Reading another chunk type rejects with a `TypeError`. The outer parser owns the body reader until the parser finishes or is closed. Leaving the outer `for await` loop early closes the parser. When iterating manually, close it with `await parser.return()` in a `finally` block or use `await using`. Normal completion reads to EOF. Closing the parser early waits for the request body's cancellation to settle and then releases the reader lock. The parser ignores cancellation failures.
+
+You can close the parser while the current entry is untouched. If you have started the entry, finish it or await `entry.return()` before closing the parser. Closing with an entry still in progress rejects with a `TypeError` after canceling the body and releasing the reader lock. An unfinished part stream can stay open until its next read reaches the closed input and rejects.
 
 If `parser.next()` is waiting for input, a concurrent `parser.return()` waits for that call to settle.

@@ -115,6 +115,10 @@ class EntryParts implements Entry {
         return this.pending !== undefined;
     }
 
+    public hasEnded(): boolean {
+        return this.failure !== undefined || this.current?.hasFailed() === true || this.current?.getReachedDelimiter() === true;
+    }
+
     public getDelimiter(): Delimiter | void {
         if (this.failure) throw this.failure.reason;
         return this.current?.getResult()?.value;
@@ -168,7 +172,7 @@ class EntryParts implements Entry {
             }
             if (this.failure || this.current?.hasFailed()) return { done: true, value: undefined };
             if (!await this.finishCurrentPart())
-                this.abortAndThrow(new TypeError('Consume or cancel the current part before skipping the entry'));
+                throw new TypeError('Consume or cancel the current part before skipping the entry');
             while (this.getDelimiter() === undefined) {
                 const part = await this.nextPart();
                 await part.skip();
@@ -190,7 +194,7 @@ class EntryParts implements Entry {
         await this.return();
     }
 
-    public abort(reason: unknown): void {
+    protected abort(reason: unknown): void {
         if (this.current?.getReachedDelimiter()) return;
         this.failure ??= { reason };
         this.current?.abort(this.failure.reason);
@@ -204,23 +208,22 @@ export async function* parse(contentType: string, body: ReadableStream<Uint8Arra
     let delimiter = await boundary.first();
     while (delimiter === 'next') {
         const entryParts = new EntryParts(readMetadata(input), boundary);
-        let needsAbort = true;
+        let returning = true;
         try {
             yield entryParts;
-            if (!entryParts.hasStarted()) await entryParts.return();
-            const next = entryParts.getDelimiter();
-            if (next === undefined)
-                throw new TypeError('Consume the current entry or await its iterator return() before advancing');
-            delimiter = next;
-            needsAbort = false;
+            returning = false;
         } catch (reason) {
-            needsAbort = false;
-            entryParts.abort(reason);
+            returning = false;
             throw reason;
         } finally {
-            // A return at the yield skips the rest of the try block and the catch.
-            if (needsAbort) entryParts.abort(new TypeError('The multipart parser is closed'));
+            if (returning && entryParts.hasStarted() && !entryParts.hasEnded())
+                throw new TypeError('Consume the current entry or await its iterator return() before closing the parser');
         }
+        if (!entryParts.hasStarted()) await entryParts.return();
+        const next = entryParts.getDelimiter();
+        if (next === undefined)
+            throw new TypeError('Consume the current entry or await its iterator return() before advancing');
+        delimiter = next;
     }
     while (await input.fill()) { }
 }
