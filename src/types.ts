@@ -1,4 +1,4 @@
-export type Entry = AsyncIterable<Entry.Part, void, void>;
+export type Entry = AsyncGenerator<Entry.Part, void, void>;
 
 export namespace Entry {
 

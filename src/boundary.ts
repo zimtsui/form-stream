@@ -1,68 +1,68 @@
-import { CR, LF, Input, isSpace, outputChunkSize } from './input.ts';
+import { CR, LF, type Input, isSpace, outputChunkSize } from './input.ts';
 
 export type Delimiter = 'next' | 'close';
 
 const dash = 0x2d;
 
 export class Boundary {
-    protected pattern: Uint8Array;
-    protected prefix: Uint8Array;
+    #input: Input;
+    #pattern: Uint8Array;
 
-    public constructor(boundary: string, protected input: Input) {
-        const pattern = new TextEncoder().encode(`\r\n--${boundary}`);
-        const prefix = new Uint8Array(pattern.length);
-        for (let i = 1, matched = 0; i < pattern.length; i++) {
-            while (matched && pattern[i] !== pattern[matched]) matched = prefix[matched - 1]!;
-            if (pattern[i] === pattern[matched]) matched++;
-            prefix[i] = matched;
-        }
-        this.pattern = pattern;
-        this.prefix = prefix;
+    public constructor(boundary: string, input: Input) {
+        this.#input = input;
+        this.#pattern = new TextEncoder().encode(`\r\n--${boundary}`);
     }
 
-    protected scan(end: number, matched: number): number {
-        const { chunk } = this.input;
-        const pattern = this.pattern;
-        while (this.input.offset < end) {
-            const byte = chunk[this.input.offset++];
-            while (matched && byte !== pattern[matched]) matched = this.prefix[matched - 1]!;
+    #scan(end: number, matched: number): number {
+        const chunk = this.#input.getChunk();
+        const offset = this.#input.getOffset();
+        const pattern = this.#pattern;
+        let cursor = offset;
+        while (cursor < end) {
+            const byte = chunk[cursor++];
             if (byte === pattern[matched]) {
                 matched++;
                 if (matched === pattern.length) break;
+            } else {
+                // The leading CR is the only CR in a validated boundary pattern.
+                matched = byte === CR ? 1 : 0;
             }
         }
+        this.#input.advance(cursor - offset);
         return matched;
     }
 
-    protected async suffix(): Promise<Delimiter | undefined> {
-        let byte = this.input.getByte() ?? await this.input.peek();
+    async #suffix(): Promise<Delimiter | undefined> {
+        const input = this.#input;
+        let byte = input.getByte() ?? await input.peek();
         let closing = false;
         if (byte === dash) {
-            this.input.offset++;
-            if ((this.input.getByte() ?? await this.input.peek()) !== dash) return;
-            this.input.offset++;
+            input.advance();
+            if ((input.getByte() ?? await input.peek()) !== dash) return;
+            input.advance();
             closing = true;
-            byte = this.input.getByte() ?? await this.input.peek();
+            byte = input.getByte() ?? await input.peek();
         }
         while (isSpace(byte)) {
-            this.input.offset++;
-            byte = this.input.getByte() ?? await this.input.peek();
+            input.advance();
+            byte = input.getByte() ?? await input.peek();
         }
         if (byte === undefined && closing) return 'close';
         if (byte !== CR) return;
-        this.input.offset++;
-        if ((this.input.getByte() ?? await this.input.peek()) !== LF) return;
-        this.input.offset++;
+        input.advance();
+        if ((input.getByte() ?? await input.peek()) !== LF) return;
+        input.advance();
         return closing ? 'close' : 'next';
     }
 
     public async first(): Promise<Delimiter> {
+        const input = this.#input;
         // A delimiter at byte zero has an implicit leading CRLF.
         let matched = 2;
-        while (this.input.getByte() !== undefined || await this.input.fill()) {
-            matched = this.scan(this.input.chunk.length, matched);
-            if (matched === this.pattern.length) {
-                const delimiter = await this.suffix();
+        while (input.getByte() !== undefined || await input.fill()) {
+            matched = this.#scan(input.getChunk().length, matched);
+            if (matched === this.#pattern.length) {
+                const delimiter = await this.#suffix();
                 if (delimiter !== undefined) return delimiter;
                 matched = 0;
             }
@@ -70,26 +70,32 @@ export class Boundary {
         throw new SyntaxError('Missing first multipart delimiter');
     }
 
-    public async *body(): AsyncGenerator<Uint8Array, Delimiter, void> {
+    public async *body(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, Delimiter, void> {
+        const input = this.#input;
         let matched = 0;
-        while (this.input.getByte() !== undefined || await this.input.fill()) {
-            const { offset } = this.input;
+        while (input.getByte() !== undefined || await input.fill()) {
+            const chunk = input.getChunk();
+            const offset = input.getOffset();
             const previous = matched;
-            matched = this.scan(Math.min(this.input.chunk.length, offset + outputChunkSize), matched);
+            matched = this.#scan(Math.min(chunk.length, offset + outputChunkSize), matched);
 
             // The uncommitted bytes consist of the old prefix and the bytes
             // just scanned. Only the new matching suffix needs to be held back.
-            const length = previous + this.input.offset - offset - matched;
-            if (length > 0) {
+            const length = previous + input.getOffset() - offset - matched;
+            if (length > 0 && shouldEmit()) {
                 const prefixLength = Math.min(previous, length);
-                const output = new Uint8Array(length);
-                output.set(this.pattern.subarray(0, prefixLength));
-                output.set(this.input.chunk.subarray(offset, offset + length - prefixLength), prefixLength);
-                yield output;
+                if (prefixLength === 0) {
+                    yield chunk.slice(offset, offset + length);
+                } else {
+                    const output = new Uint8Array(length);
+                    output.set(this.#pattern.subarray(0, prefixLength));
+                    output.set(chunk.subarray(offset, offset + length - prefixLength), prefixLength);
+                    yield output;
+                }
             }
-            if (matched === this.pattern.length) {
+            if (matched === this.#pattern.length) {
                 // RFC 2046 reserves the boundary prefix at the start of a body line.
-                const delimiter = await this.suffix();
+                const delimiter = await this.#suffix();
                 if (delimiter === undefined) throw new SyntaxError('Invalid multipart delimiter suffix');
                 return delimiter;
             }

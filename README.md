@@ -74,6 +74,6 @@ for await (const entry of parse(contentType, body)) {
 // { name: 'attachment', filename: 'example.bin', byteLength: 3 }
 ```
 
-You can explicitly skip a part by awaiting `return()` on its `chunks` async iterator or canceling the stream. To explicitly skip an entry, await `return()` on its part iterator. Breaking out of the inner loop calls the same method. The part iterator's `return()` skips an untouched part automatically. If reading or canceling the current part has started and remains unfinished, this `return()` rejects with a `TypeError` and terminates parsing.
+You can explicitly skip a part by awaiting `return()` on its `chunks` async iterator or canceling the stream. To explicitly skip an entry, await `entry.return()`. Breaking out of the inner loop or disposing the entry with `await using` calls the same method. This method skips an untouched part automatically. If reading or canceling the current part has started and remains unfinished, `entry.return()` rejects with a `TypeError` and terminates parsing.
 
-Once you call `next()` or `return()` on the part iterator, read the entry's body to completion or await `return()` before advancing the outer iterator. Breaking out of the outer loop cancels the input stream.
+Once you call `entry.next()` or `entry.return()`, read the entry's body to completion or await `entry.return()` before advancing the outer iterator. To abort parsing from an unfinished entry, call `entry.throw(reason)`. It rejects with `reason` and starts input cleanup. Breaking out of the outer loop cancels the input stream.
