@@ -76,4 +76,8 @@ for await (const entry of parse(contentType, body)) {
 
 You can explicitly skip a part by awaiting `return()` on its `chunks` async iterator or canceling the stream. To explicitly skip an entry, await `entry.return()`. Breaking out of the inner loop or disposing the entry with `await using` calls the same method. This method skips an untouched part automatically. If reading or canceling the current part has started and remains unfinished, `entry.return()` rejects with a `TypeError` and terminates parsing.
 
-Once you call `entry.next()` or `entry.return()`, read the entry's body to completion or await `entry.return()` before advancing the outer iterator. To abort parsing from an unfinished entry, call `entry.throw(reason)`. It rejects with `reason` and starts input cleanup. Breaking out of the outer loop cancels the input stream.
+Once you call `entry.next()` or `entry.return()`, read the entry's body to completion or await `entry.return()` before advancing the outer iterator. Calling `entry.throw(reason)` on an unfinished entry marks it as failed and rejects with `reason`. The next call to `parser.next()` reports that failure. Calling `entry.return()` on a failed entry resolves with `done: true` and preserves the failure for the parser.
+
+The request body must supply `Uint8Array` chunks. Reading another chunk type rejects with a `TypeError`. The outer parser owns the body reader until the parser finishes or is closed. Leaving the outer `for await` loop early closes the parser. When iterating manually, close it with `await parser.return()` in a `finally` block or use `await using`. Closing the parser early cancels an active body, and normal completion reads to EOF.
+
+If `parser.next()` is waiting for input, a concurrent `parser.return()` waits for that call to settle.

@@ -1,4 +1,9 @@
 const empty = new Uint8Array(0);
+// Use the intrinsic typed-array name to recognize chunks from other realms.
+const getTypedArrayName = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(Uint8Array.prototype),
+    Symbol.toStringTag,
+)!.get!;
 
 export const CR = 0x0d;
 export const LF = 0x0a;
@@ -43,12 +48,21 @@ export class Input {
         this.chunk = empty;
         this.offset = 0;
         while (this.reader && !this.ended) {
-            const { value, done } = await this.reader.read();
+            let result: ReadableStreamReadResult<Uint8Array>;
+            try {
+                result = await this.reader.read();
+            } catch (reason) {
+                this.ended = true;
+                throw reason;
+            }
             if (this.disposal) throw new TypeError('The multipart parser is closed');
+            const { value, done } = result;
             if (done) {
                 this.ended = true;
                 break;
             }
+            if (getTypedArrayName.call(value) !== 'Uint8Array')
+                throw new TypeError('Expected a Uint8Array chunk in the multipart body');
             if (value.byteLength) {
                 this.chunk = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
                 return true;

@@ -10,7 +10,7 @@ type PartSource = {
 
 class PartStream {
     public part: Entry.Part;
-    protected source: ReturnType<PartSource['source']>;
+    protected source?: ReturnType<PartSource['source']>;
     protected controller!: ReadableStreamDefaultController<Uint8Array>;
     protected pending?: Promise<void>;
     protected skipping?: Promise<void>;
@@ -19,7 +19,10 @@ class PartStream {
     protected closed = false;
 
     public constructor({ type, source }: PartSource) {
-        this.source = source(() => !this.closed);
+        this.source = source(() => {
+            if (this.failure) throw this.failure.reason;
+            return !this.closed;
+        });
         const chunks = new ReadableStream<Uint8Array>({
             start: controller => { this.controller = controller; },
             pull: () => this.pending = this.read(),
@@ -33,6 +36,10 @@ class PartStream {
 
     public hasStarted(): boolean {
         return this.pending !== undefined || this.skipping !== undefined;
+    }
+
+    public hasFailed(): boolean {
+        return this.failure !== undefined;
     }
 
     public getResult(): IteratorReturnResult<Delimiter | void> | undefined {
@@ -51,10 +58,12 @@ class PartStream {
     }
 
     protected async read(): Promise<void> {
+        if (!this.source) return;
         try {
             const result = await this.source.next();
             if (this.failure) throw this.failure.reason;
             if (result.done) {
+                this.source = undefined;
                 this.sourceResult = result;
                 this.close();
             } else if (!this.closed) {
@@ -79,6 +88,7 @@ class PartStream {
     public abort(reason: unknown): void {
         if (this.sourceResult || this.failure) return;
         this.failure = { reason };
+        this.source = undefined;
         if (this.closed) return;
         this.closed = true;
         this.controller.error(reason);
@@ -88,15 +98,13 @@ class PartStream {
 class EntryParts implements Entry {
     protected metadata: ReturnType<typeof readMetadata>;
     protected boundary: Boundary;
-    protected onAbort: (reason: unknown) => void;
     protected current?: PartStream;
     protected failure?: { reason: unknown };
     protected pending?: Promise<void>;
 
-    public constructor(metadata: ReturnType<typeof readMetadata>, boundary: Boundary, onAbort: (reason: unknown) => void) {
+    public constructor(metadata: ReturnType<typeof readMetadata>, boundary: Boundary) {
         this.metadata = metadata;
         this.boundary = boundary;
-        this.onAbort = onAbort;
     }
 
     public [Symbol.asyncIterator](): this {
@@ -158,6 +166,7 @@ class EntryParts implements Entry {
                     this.abortAndThrow(reason);
                 }
             }
+            if (this.failure || this.current?.hasFailed()) return { done: true, value: undefined };
             if (!await this.finishCurrentPart())
                 this.abortAndThrow(new TypeError('Consume or cancel the current part before skipping the entry'));
             while (this.getDelimiter() === undefined) {
@@ -173,7 +182,7 @@ class EntryParts implements Entry {
     }
 
     protected abortAndThrow(reason: unknown): never {
-        if (this.abort(reason)) this.onAbort(reason);
+        this.abort(reason);
         throw reason;
     }
 
@@ -181,11 +190,10 @@ class EntryParts implements Entry {
         await this.return();
     }
 
-    public abort(reason: unknown): boolean {
-        if (this.current?.getReachedDelimiter()) return false;
+    public abort(reason: unknown): void {
+        if (this.current?.getReachedDelimiter()) return;
         this.failure ??= { reason };
         this.current?.abort(this.failure.reason);
-        return true;
     }
 }
 
@@ -194,16 +202,11 @@ export async function* parse(contentType: string, body: ReadableStream<Uint8Arra
     const input = new Input(body);
     let entryParts: EntryParts | undefined;
     let failure: { reason: unknown } | undefined;
-    const onAbort = (reason: unknown) => {
-        failure ??= { reason };
-        // EntryParts reports the error immediately while input cleanup runs.
-        void input[Symbol.asyncDispose]().catch(() => { });
-    };
     try {
         const boundary = new Boundary(boundaryValue, input);
         let delimiter = await boundary.first();
         while (delimiter === 'next') {
-            entryParts = new EntryParts(readMetadata(input), boundary, onAbort);
+            entryParts = new EntryParts(readMetadata(input), boundary);
             yield entryParts;
             if (!entryParts.hasStarted()) await entryParts.return();
             const next = entryParts.getDelimiter();
