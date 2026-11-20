@@ -35,42 +35,42 @@ async function readWord(input: Input, accepts: (byte: number) => boolean, limit:
 }
 
 class MimeValue {
-    #input: Input;
-    #headerLine: boolean;
-    #ended = false;
+    protected input: Input;
+    protected headerLine: boolean;
+    protected ended = false;
 
     public constructor(input: Input, headerLine: boolean) {
-        this.#input = input;
-        this.#headerLine = headerLine;
+        this.input = input;
+        this.headerLine = headerLine;
     }
 
-    async #fold(): Promise<boolean> {
-        const input = this.#input;
+    protected async fold(): Promise<boolean> {
+        const input = this.input;
         input.advance();
         if ((input.getByte() ?? await input.peek()) !== LF)
             throw new SyntaxError('Expected CRLF in MIME header');
         input.advance();
         if (isSpace(input.getByte() ?? await input.peek())) return true;
-        if (!this.#headerLine) throw new SyntaxError('Unexpected CRLF in Content-Type');
-        this.#ended = true;
+        if (!this.headerLine) throw new SyntaxError('Unexpected CRLF in Content-Type');
+        this.ended = true;
         return false;
     }
 
-    async #peek(): Promise<number | undefined> {
-        if (this.#ended) return;
-        const byte = this.#input.getByte() ?? await this.#input.peek();
-        if (byte === CR) return await this.#fold() ? this.#input.getByte() : undefined;
+    protected async peek(): Promise<number | undefined> {
+        if (this.ended) return;
+        const byte = this.input.getByte() ?? await this.input.peek();
+        if (byte === CR) return await this.fold() ? this.input.getByte() : undefined;
         if (byte === LF) throw new SyntaxError('Unexpected LF in MIME header');
-        if (byte === undefined && this.#headerLine) throw new SyntaxError('Unexpected end of MIME headers');
+        if (byte === undefined && this.headerLine) throw new SyntaxError('Unexpected end of MIME headers');
         return byte;
     }
 
-    async #quotedPair(): Promise<number> {
-        const input = this.#input;
+    protected async quotedPair(): Promise<number> {
+        const input = this.input;
         input.advance();
         let byte = input.getByte() ?? await input.peek();
         if (byte === CR) {
-            if (!await this.#fold()) throw new SyntaxError('Expected a continuation after quoted CRLF');
+            if (!await this.fold()) throw new SyntaxError('Expected a continuation after quoted CRLF');
             byte = input.getByte();
         }
         if (byte === undefined || byte === LF) throw new SyntaxError('Invalid MIME quoted pair');
@@ -78,56 +78,56 @@ class MimeValue {
         return byte;
     }
 
-    async #skipComment(): Promise<void> {
+    protected async skipComment(): Promise<void> {
         let depth = 1;
-        this.#input.advance();
+        this.input.advance();
         while (depth) {
-            const byte = this.#input.getByte();
-            const current = byte === undefined || byte === CR || byte === LF ? await this.#peek() : byte;
+            const byte = this.input.getByte();
+            const current = byte === undefined || byte === CR || byte === LF ? await this.peek() : byte;
             if (current === undefined || current > 0x7f) throw new SyntaxError('Invalid MIME comment');
             if (current === backslash) {
-                if (await this.#quotedPair() > 0x7f) throw new SyntaxError('Invalid MIME comment');
+                if (await this.quotedPair() > 0x7f) throw new SyntaxError('Invalid MIME comment');
                 continue;
             }
             if (current === openParen) depth++;
             if (current === closeParen) depth--;
-            this.#input.advance();
+            this.input.advance();
         }
     }
 
     public async skipSpace(): Promise<number | undefined> {
-        let byte = await this.#peek();
+        let byte = await this.peek();
         while (isSpace(byte) || byte === openParen) {
-            if (byte === openParen) await this.#skipComment();
-            else this.#input.advance();
-            byte = this.#input.getByte();
-            if (byte === undefined || byte === CR || byte === LF) byte = await this.#peek();
+            if (byte === openParen) await this.skipComment();
+            else this.input.advance();
+            byte = this.input.getByte();
+            if (byte === undefined || byte === CR || byte === LF) byte = await this.peek();
         }
         return byte;
     }
 
     public async token(limit: number): Promise<string> {
         if (await this.skipSpace() === undefined) throw new SyntaxError('Expected a MIME token');
-        return readWord(this.#input, isToken, limit);
+        return readWord(this.input, isToken, limit);
     }
 
     public async parameter(): Promise<string | undefined> {
         const byte = await this.skipSpace();
         if (byte === undefined) return;
         if (byte !== 0x3b) throw new SyntaxError('Expected ";" before a MIME parameter');
-        this.#input.advance();
+        this.input.advance();
         const attribute = await this.token(8);
         if (await this.skipSpace() !== 0x3d) throw new SyntaxError('Expected "=" after a MIME parameter name');
-        this.#input.advance();
+        this.input.advance();
         return attribute;
     }
 
     public async *parameterValue(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, void, void> {
-        const input = this.#input;
+        const input = this.input;
         let byte = await this.skipSpace();
         if (byte === quote) {
             input.advance();
-            yield* this.#quotedString(shouldEmit);
+            yield* this.quotedString(shouldEmit);
             return;
         }
         if (byte === undefined || !isToken(byte)) throw new SyntaxError('Expected a MIME parameter value');
@@ -143,8 +143,8 @@ class MimeValue {
         } while (byte !== undefined && isToken(byte));
     }
 
-    async *#quotedString(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, void, void> {
-        const input = this.#input;
+    protected async *quotedString(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, void, void> {
+        const input = this.input;
         for (;;) {
             const byte = input.getByte() ?? await input.peek();
             if (byte === quote) {
@@ -152,12 +152,12 @@ class MimeValue {
                 return;
             }
             if (byte === backslash) {
-                const escaped = await this.#quotedPair();
+                const escaped = await this.quotedPair();
                 if (shouldEmit()) yield Uint8Array.of(escaped);
                 continue;
             }
             if (byte === CR) {
-                if (!await this.#fold()) throw new SyntaxError('Unterminated MIME quoted string');
+                if (!await this.fold()) throw new SyntaxError('Unterminated MIME quoted string');
                 continue;
             }
             if (byte === undefined || byte === LF) throw new SyntaxError('Unterminated MIME quoted string');
@@ -177,12 +177,12 @@ class MimeValue {
     }
 
     public async skipLine(): Promise<void> {
-        while (await this.#peek() !== undefined) {
-            const chunk = this.#input.getChunk();
-            const offset = this.#input.getOffset();
+        while (await this.peek() !== undefined) {
+            const chunk = this.input.getChunk();
+            const offset = this.input.getOffset();
             let end = offset + 1;
             while (end < chunk.length && chunk[end] !== CR && chunk[end] !== LF) end++;
-            this.#input.advance(end - offset);
+            this.input.advance(end - offset);
         }
     }
 }

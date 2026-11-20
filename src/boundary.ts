@@ -5,18 +5,18 @@ export type Delimiter = 'next' | 'close';
 const dash = 0x2d;
 
 export class Boundary {
-    #input: Input;
-    #pattern: Uint8Array;
+    protected input: Input;
+    protected pattern: Uint8Array;
 
     public constructor(boundary: string, input: Input) {
-        this.#input = input;
-        this.#pattern = new TextEncoder().encode(`\r\n--${boundary}`);
+        this.input = input;
+        this.pattern = new TextEncoder().encode(`\r\n--${boundary}`);
     }
 
-    #scan(end: number, matched: number): number {
-        const chunk = this.#input.getChunk();
-        const offset = this.#input.getOffset();
-        const pattern = this.#pattern;
+    protected scan(end: number, matched: number): number {
+        const chunk = this.input.getChunk();
+        const offset = this.input.getOffset();
+        const pattern = this.pattern;
         let cursor = offset;
         while (cursor < end) {
             const byte = chunk[cursor++];
@@ -28,12 +28,12 @@ export class Boundary {
                 matched = byte === CR ? 1 : 0;
             }
         }
-        this.#input.advance(cursor - offset);
+        this.input.advance(cursor - offset);
         return matched;
     }
 
-    async #suffix(): Promise<Delimiter | undefined> {
-        const input = this.#input;
+    protected async suffix(): Promise<Delimiter | undefined> {
+        const input = this.input;
         let byte = input.getByte() ?? await input.peek();
         let closing = false;
         if (byte === dash) {
@@ -56,13 +56,13 @@ export class Boundary {
     }
 
     public async first(): Promise<Delimiter> {
-        const input = this.#input;
+        const input = this.input;
         // A delimiter at byte zero has an implicit leading CRLF.
         let matched = 2;
         while (input.getByte() !== undefined || await input.fill()) {
-            matched = this.#scan(input.getChunk().length, matched);
-            if (matched === this.#pattern.length) {
-                const delimiter = await this.#suffix();
+            matched = this.scan(input.getChunk().length, matched);
+            if (matched === this.pattern.length) {
+                const delimiter = await this.suffix();
                 if (delimiter !== undefined) return delimiter;
                 matched = 0;
             }
@@ -71,13 +71,13 @@ export class Boundary {
     }
 
     public async *body(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, Delimiter, void> {
-        const input = this.#input;
+        const input = this.input;
         let matched = 0;
         while (input.getByte() !== undefined || await input.fill()) {
             const chunk = input.getChunk();
             const offset = input.getOffset();
             const previous = matched;
-            matched = this.#scan(Math.min(chunk.length, offset + outputChunkSize), matched);
+            matched = this.scan(Math.min(chunk.length, offset + outputChunkSize), matched);
 
             // The uncommitted bytes consist of the old prefix and the bytes
             // just scanned. Only the new matching suffix needs to be held back.
@@ -88,14 +88,14 @@ export class Boundary {
                     yield chunk.slice(offset, offset + length);
                 } else {
                     const output = new Uint8Array(length);
-                    output.set(this.#pattern.subarray(0, prefixLength));
+                    output.set(this.pattern.subarray(0, prefixLength));
                     output.set(chunk.subarray(offset, offset + length - prefixLength), prefixLength);
                     yield output;
                 }
             }
-            if (matched === this.#pattern.length) {
+            if (matched === this.pattern.length) {
                 // RFC 2046 reserves the boundary prefix at the start of a body line.
-                const delimiter = await this.#suffix();
+                const delimiter = await this.suffix();
                 if (delimiter === undefined) throw new SyntaxError('Invalid multipart delimiter suffix');
                 return delimiter;
             }
