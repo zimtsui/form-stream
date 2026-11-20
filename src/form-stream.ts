@@ -199,32 +199,28 @@ class EntryParts implements Entry {
 
 export async function* parse(contentType: string, body: ReadableStream<Uint8Array>): AsyncGenerator<Entry, void, void> {
     const boundaryValue = await readBoundary(contentType);
-    const input = new Input(body);
-    let entryParts: EntryParts | undefined;
-    let failure: { reason: unknown } | undefined;
-    try {
-        const boundary = new Boundary(boundaryValue, input);
-        let delimiter = await boundary.first();
-        while (delimiter === 'next') {
-            entryParts = new EntryParts(readMetadata(input), boundary);
+    await using input = new Input(body);
+    const boundary = new Boundary(boundaryValue, input);
+    let delimiter = await boundary.first();
+    while (delimiter === 'next') {
+        const entryParts = new EntryParts(readMetadata(input), boundary);
+        let needsAbort = true;
+        try {
             yield entryParts;
             if (!entryParts.hasStarted()) await entryParts.return();
             const next = entryParts.getDelimiter();
             if (next === undefined)
                 throw new TypeError('Consume the current entry or await its iterator return() before advancing');
             delimiter = next;
-            entryParts = undefined;
-        }
-        while (await input.fill()) { }
-    } catch (reason) {
-        failure = { reason };
-        throw reason;
-    } finally {
-        entryParts?.abort(failure ? failure.reason : new TypeError('The multipart parser is closed'));
-        try {
-            await input[Symbol.asyncDispose]();
+            needsAbort = false;
         } catch (reason) {
-            if (!failure) throw reason;
+            needsAbort = false;
+            entryParts.abort(reason);
+            throw reason;
+        } finally {
+            // A return at the yield skips the rest of the try block and the catch.
+            if (needsAbort) entryParts.abort(new TypeError('The multipart parser is closed'));
         }
     }
+    while (await input.fill()) { }
 }
