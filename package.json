@@ -1,7 +1,7 @@
 {
   "name": "@zimtsui/form-stream",
   "version": "0.0.1",
-  "exports": "./build/form-stream.js",
+  "exports": "./build/exports.js",
   "description": "",
   "type": "module",
   "engines": {
