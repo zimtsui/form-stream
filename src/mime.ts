@@ -1,4 +1,4 @@
-import { CR, LF, Input, isSpace, outputChunkSize } from './input.ts';
+import { BufferInput, CR, LF, type Input, isSpace, outputChunkSize } from './input.ts';
 
 const quote = 0x22;
 const backslash = 0x5c;
@@ -7,13 +7,17 @@ const closeParen = 0x29;
 const tspecials = '()<>@,;:\\"/[]?=';
 const disposition = 'content-disposition';
 
-type Metadata = {
-    type: 'name' | 'filename';
+interface Parameter<Name extends string> {
+    name: Name;
     source: AsyncGenerator<Uint8Array, void, void>;
 };
 
 function isToken(byte: number): boolean {
     return byte > 0x20 && byte < 0x7f && !tspecials.includes(String.fromCharCode(byte));
+}
+
+function isQuotedText(byte: number): boolean {
+    return byte !== quote && byte !== backslash && byte !== CR && byte !== LF;
 }
 
 function isHeaderName(byte: number): boolean {
@@ -111,18 +115,38 @@ class MimeValue {
         return readWord(this.input, isToken, limit);
     }
 
-    public async parameter(): Promise<string | undefined> {
-        const byte = await this.skipSpace();
-        if (byte === undefined) return;
-        if (byte !== 0x3b) throw new SyntaxError('Expected ";" before a MIME parameter');
-        this.input.advance();
-        const attribute = await this.token(8);
-        if (await this.skipSpace() !== 0x3d) throw new SyntaxError('Expected "=" after a MIME parameter name');
-        this.input.advance();
-        return attribute;
+    public async *parameters<Name extends string>(...names: Name[]): AsyncGenerator<Parameter<Name>, void, void> {
+        for (;;) {
+            const byte = await this.skipSpace();
+            if (byte === undefined) return;
+            if (byte !== 0x3b) throw new SyntaxError('Expected ";" before a MIME parameter');
+            this.input.advance();
+            const attribute = await this.token(8);
+            if (await this.skipSpace() !== 0x3d) throw new SyntaxError('Expected "=" after a MIME parameter name');
+            this.input.advance();
+
+            const name = names.find(name => name === attribute);
+            const source = this.parameterValue();
+            if (name !== undefined) {
+                yield { name, source };
+            } else {
+                for await (const _ of source) { }
+            }
+        }
     }
 
-    public async *parameterValue(): AsyncGenerator<Uint8Array, void, void> {
+    protected takeRun(accepts: (byte: number) => boolean): Uint8Array {
+        const input = this.input;
+        const chunk = input.getChunk();
+        const offset = input.getOffset();
+        const limit = Math.min(chunk.length, offset + outputChunkSize);
+        let end = offset;
+        while (end < limit && accepts(chunk[end]!)) end++;
+        input.advance(end - offset);
+        return chunk.slice(offset, end);
+    }
+
+    protected async *parameterValue(): AsyncGenerator<Uint8Array, void, void> {
         const input = this.input;
         let byte = await this.skipSpace();
         if (byte === quote) {
@@ -132,13 +156,7 @@ class MimeValue {
         }
         if (byte === undefined || !isToken(byte)) throw new SyntaxError('Expected a MIME parameter value');
         do {
-            const chunk = input.getChunk();
-            const offset = input.getOffset();
-            const limit = Math.min(chunk.length, offset + outputChunkSize);
-            let end = offset;
-            while (end < limit && isToken(chunk[end]!)) end++;
-            input.advance(end - offset);
-            yield chunk.slice(offset, end);
+            yield this.takeRun(isToken);
             byte = input.getByte() ?? await input.peek();
         } while (byte !== undefined && isToken(byte));
     }
@@ -161,18 +179,7 @@ class MimeValue {
                 continue;
             }
             if (byte === undefined || byte === LF) throw new SyntaxError('Unterminated MIME quoted string');
-
-            const chunk = input.getChunk();
-            const offset = input.getOffset();
-            const limit = Math.min(chunk.length, offset + outputChunkSize);
-            let end = offset;
-            while (end < limit) {
-                const current = chunk[end];
-                if (current === quote || current === backslash || current === CR || current === LF) break;
-                end++;
-            }
-            input.advance(end - offset);
-            yield chunk.slice(offset, end);
+            yield this.takeRun(isQuotedText);
         }
     }
 
@@ -188,7 +195,7 @@ class MimeValue {
 }
 
 export async function readBoundary(contentType: string): Promise<string> {
-    const input = new Input(undefined, new TextEncoder().encode(contentType));
+    const input = new BufferInput(new TextEncoder().encode(contentType));
     const value = new MimeValue(input, false);
     if (await value.token(9) !== 'multipart' || await value.skipSpace() !== 0x2f)
         throw new SyntaxError('Expected a multipart/form-data Content-Type');
@@ -196,17 +203,12 @@ export async function readBoundary(contentType: string): Promise<string> {
     if (await value.token(9) !== 'form-data') throw new SyntaxError('Expected a multipart/form-data Content-Type');
 
     let boundary: string | undefined;
-    for (let parameter = await value.parameter(); parameter !== undefined; parameter = await value.parameter()) {
-        const source = value.parameterValue();
-        if (parameter === 'boundary') {
-            if (boundary !== undefined) throw new SyntaxError('Duplicate multipart boundary');
-            boundary = '';
-            for await (const chunk of source) {
-                if (boundary.length + chunk.length > 70) throw new SyntaxError('Multipart boundary exceeds 70 bytes');
-                boundary += String.fromCharCode(...chunk);
-            }
-        } else {
-            for await (const _ of source) { }
+    for await (const { source } of value.parameters('boundary')) {
+        if (boundary !== undefined) throw new SyntaxError('Duplicate multipart boundary');
+        boundary = '';
+        for await (const chunk of source) {
+            if (boundary.length + chunk.length > 70) throw new SyntaxError('Multipart boundary exceeds 70 bytes');
+            boundary += String.fromCharCode(...chunk);
         }
     }
     if (!boundary || boundary.endsWith(' ') || /[^0-9A-Za-z'()+_,.\/:=? -]/.test(boundary))
@@ -214,10 +216,9 @@ export async function readBoundary(contentType: string): Promise<string> {
     return boundary;
 }
 
-export async function* readMetadata(input: Input): AsyncGenerator<Metadata, void, void> {
+export async function* readMetadata(input: Input): AsyncGenerator<Parameter<'name' | 'filename'>, void, void> {
     let hasDisposition = false;
-    let hasName = false;
-    let hasFilename = false;
+    const seen = { name: false, filename: false };
     while ((input.getByte() ?? await input.peek()) !== CR) {
         const header = await readWord(input, isHeaderName, disposition.length);
         if ((input.getByte() ?? await input.peek()) !== 0x3a) throw new SyntaxError('Expected ":" after a MIME header name');
@@ -230,23 +231,15 @@ export async function* readMetadata(input: Input): AsyncGenerator<Metadata, void
         if (hasDisposition) throw new SyntaxError('Duplicate Content-Disposition');
         hasDisposition = true;
         if (await value.token(9) !== 'form-data') throw new SyntaxError('Expected Content-Disposition: form-data');
-        for (let parameter = await value.parameter(); parameter !== undefined; parameter = await value.parameter()) {
-            const source = value.parameterValue();
-            if (parameter === 'name') {
-                if (hasName) throw new SyntaxError('Duplicate name parameter');
-                hasName = true;
-            } else if (parameter === 'filename') {
-                if (hasFilename) throw new SyntaxError('Duplicate filename parameter');
-                hasFilename = true;
-            } else {
-                for await (const _ of source) { }
-                continue;
-            }
-            yield { type: parameter, source };
+        for await (const parameter of value.parameters('name', 'filename')) {
+            const { name } = parameter;
+            if (seen[name]) throw new SyntaxError(`Duplicate ${name} parameter`);
+            seen[name] = true;
+            yield parameter;
         }
     }
     input.advance();
     if ((input.getByte() ?? await input.peek()) !== LF) throw new SyntaxError('Expected CRLF after MIME headers');
     input.advance();
-    if (!hasName) throw new SyntaxError('Expected a Content-Disposition name parameter');
+    if (!seen.name) throw new SyntaxError('Expected a Content-Disposition name parameter');
 }

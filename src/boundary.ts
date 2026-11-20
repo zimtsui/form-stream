@@ -1,14 +1,14 @@
-import { CR, LF, type Input, isSpace, outputChunkSize } from './input.ts';
+import { CR, LF, isSpace, outputChunkSize, type StreamInput } from './input.ts';
 
 export type Delimiter = 'next' | 'close';
 
 const dash = 0x2d;
 
 export class Boundary {
-    protected input: Input;
+    protected input: StreamInput;
     protected pattern: Uint8Array;
 
-    public constructor(boundary: string, input: Input) {
+    public constructor(boundary: string, input: StreamInput) {
         this.input = input;
         this.pattern = new TextEncoder().encode(`\r\n--${boundary}`);
     }

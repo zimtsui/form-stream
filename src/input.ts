@@ -8,15 +8,14 @@ export function isSpace(byte: number | undefined): boolean {
     return byte === 0x20 || byte === 0x09;
 }
 
-export class Input implements AsyncDisposable {
-    protected reader?: ReadableStreamDefaultReader<Uint8Array>;
-    protected chunk: Uint8Array;
-    protected offset = 0;
+function asUint8Array(source: Uint8Array): Uint8Array {
+    // Use Uint8Array.prototype.slice even when the source is a Buffer.
+    return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+}
 
-    public constructor(stream?: ReadableStream<Uint8Array>, initial = empty) {
-        this.reader = stream?.getReader();
-        this.chunk = initial;
-    }
+export abstract class Input {
+    protected chunk: Uint8Array = empty;
+    protected offset = 0;
 
     public getChunk(): Uint8Array {
         return this.chunk;
@@ -34,6 +33,28 @@ export class Input implements AsyncDisposable {
         return this.chunk[this.offset];
     }
 
+    public abstract peek(): number | undefined | Promise<number | undefined>;
+}
+
+export class BufferInput extends Input {
+    public constructor(source: Uint8Array) {
+        super();
+        this.chunk = asUint8Array(source);
+    }
+
+    public override peek(): number | undefined {
+        return this.getByte();
+    }
+}
+
+export class StreamInput extends Input implements AsyncDisposable {
+    protected reader?: ReadableStreamDefaultReader<Uint8Array>;
+
+    public constructor(source: ReadableStream<Uint8Array>) {
+        super();
+        this.reader = source.getReader();
+    }
+
     public async fill(): Promise<boolean> {
         this.chunk = empty;
         this.offset = 0;
@@ -41,14 +62,14 @@ export class Input implements AsyncDisposable {
             const { value, done } = await this.reader.read();
             if (done) break;
             if (value.byteLength) {
-                this.chunk = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+                this.chunk = asUint8Array(value);
                 return true;
             }
         }
         return false;
     }
 
-    public async peek(): Promise<number | undefined> {
+    public override async peek(): Promise<number | undefined> {
         if (this.getByte() === undefined) await this.fill();
         return this.getByte();
     }
