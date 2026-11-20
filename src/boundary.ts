@@ -70,7 +70,7 @@ export class Boundary {
         throw new SyntaxError('Missing first multipart delimiter');
     }
 
-    public async *body(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, Delimiter, void> {
+    public async *body(): AsyncGenerator<Uint8Array, Delimiter, void> {
         const input = this.input;
         let matched = 0;
         while (input.getByte() !== undefined || await input.fill()) {
@@ -82,7 +82,7 @@ export class Boundary {
             // The uncommitted bytes consist of the old prefix and the bytes
             // just scanned. Only the new matching suffix needs to be held back.
             const length = previous + input.getOffset() - offset - matched;
-            if (length > 0 && shouldEmit()) {
+            if (length > 0) {
                 const prefixLength = Math.min(previous, length);
                 if (prefixLength === 0) {
                     yield chunk.slice(offset, offset + length);

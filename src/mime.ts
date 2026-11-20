@@ -9,7 +9,7 @@ const disposition = 'content-disposition';
 
 type Metadata = {
     type: 'name' | 'filename';
-    source: (shouldEmit: () => boolean) => AsyncGenerator<Uint8Array, void, void>;
+    source: AsyncGenerator<Uint8Array, void, void>;
 };
 
 function isToken(byte: number): boolean {
@@ -122,12 +122,12 @@ class MimeValue {
         return attribute;
     }
 
-    public async *parameterValue(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, void, void> {
+    public async *parameterValue(): AsyncGenerator<Uint8Array, void, void> {
         const input = this.input;
         let byte = await this.skipSpace();
         if (byte === quote) {
             input.advance();
-            yield* this.quotedString(shouldEmit);
+            yield* this.quotedString();
             return;
         }
         if (byte === undefined || !isToken(byte)) throw new SyntaxError('Expected a MIME parameter value');
@@ -138,12 +138,12 @@ class MimeValue {
             let end = offset;
             while (end < limit && isToken(chunk[end]!)) end++;
             input.advance(end - offset);
-            if (shouldEmit()) yield chunk.slice(offset, end);
+            yield chunk.slice(offset, end);
             byte = input.getByte() ?? await input.peek();
         } while (byte !== undefined && isToken(byte));
     }
 
-    protected async *quotedString(shouldEmit: () => boolean): AsyncGenerator<Uint8Array, void, void> {
+    protected async *quotedString(): AsyncGenerator<Uint8Array, void, void> {
         const input = this.input;
         for (;;) {
             const byte = input.getByte() ?? await input.peek();
@@ -153,7 +153,7 @@ class MimeValue {
             }
             if (byte === backslash) {
                 const escaped = await this.quotedPair();
-                if (shouldEmit()) yield Uint8Array.of(escaped);
+                yield Uint8Array.of(escaped);
                 continue;
             }
             if (byte === CR) {
@@ -172,7 +172,7 @@ class MimeValue {
                 end++;
             }
             input.advance(end - offset);
-            if (shouldEmit()) yield chunk.slice(offset, end);
+            yield chunk.slice(offset, end);
         }
     }
 
@@ -197,15 +197,16 @@ export async function readBoundary(contentType: string): Promise<string> {
 
     let boundary: string | undefined;
     for (let parameter = await value.parameter(); parameter !== undefined; parameter = await value.parameter()) {
+        const source = value.parameterValue();
         if (parameter === 'boundary') {
             if (boundary !== undefined) throw new SyntaxError('Duplicate multipart boundary');
             boundary = '';
-            for await (const chunk of value.parameterValue(() => true)) {
+            for await (const chunk of source) {
                 if (boundary.length + chunk.length > 70) throw new SyntaxError('Multipart boundary exceeds 70 bytes');
                 boundary += String.fromCharCode(...chunk);
             }
         } else {
-            await value.parameterValue(() => false).next();
+            for await (const _ of source) { }
         }
     }
     if (!boundary || boundary.endsWith(' ') || /[^0-9A-Za-z'()+_,.\/:=? -]/.test(boundary))
@@ -230,18 +231,18 @@ export async function* readMetadata(input: Input): AsyncGenerator<Metadata, void
         hasDisposition = true;
         if (await value.token(9) !== 'form-data') throw new SyntaxError('Expected Content-Disposition: form-data');
         for (let parameter = await value.parameter(); parameter !== undefined; parameter = await value.parameter()) {
-            const source = value.parameterValue.bind(value);
+            const source = value.parameterValue();
             if (parameter === 'name') {
                 if (hasName) throw new SyntaxError('Duplicate name parameter');
                 hasName = true;
-                yield { type: 'name', source };
             } else if (parameter === 'filename') {
                 if (hasFilename) throw new SyntaxError('Duplicate filename parameter');
                 hasFilename = true;
-                yield { type: 'filename', source };
             } else {
-                await source(() => false).next();
+                for await (const _ of source) { }
+                continue;
             }
+            yield { type: parameter, source };
         }
     }
     input.advance();

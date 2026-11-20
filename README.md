@@ -55,17 +55,20 @@ for await (const entry of parse(contentType, body)) {
 // { name: 'attachment', filename: 'example.bin', byteLength: 3 }
 ```
 
-Each entry yields a `name` part and an optional `filename` part in parameter order, followed by its `body` part. Advancing the part iterator skips any current part whose `chunks` stream has yet to receive a read or cancellation request. Once you start reading a part, read its `chunks` to completion or await cancellation before requesting the next part. Here, `text()` decodes the metadata and the `message` body as UTF-8. The attachment body is read in chunks of raw bytes.
+Each entry yields a `name` part and an optional `filename` part in parameter order, followed by its `body` part. Read each part's `chunks` to EOF before requesting the next part. Read the body stream to EOF before requesting the next entry. Here, `text()` decodes the metadata and the `message` body as UTF-8. The attachment body is read in chunks of raw bytes.
 
-### Skip the first entry
+### Discard the first entry
 
-Use this outer loop with a fresh request and the same `readEntry()` helper. Advancing the outer iterator automatically skips an entry whose part iterator has yet to receive a `next()` or `return()` call.
+Use this outer loop with a fresh request and the same `readEntry()` helper. To discard an entry, consume the streams of all its parts and discard the chunks.
 
 ```ts
-let skipFirst = true;
+let discardFirst = true;
 for await (const entry of parse(contentType, body)) {
-    if (skipFirst) {
-        skipFirst = false;
+    if (discardFirst) {
+        discardFirst = false;
+        for await (const { chunks } of entry) {
+            for await (const _ of chunks) { }
+        }
         continue;
     }
     await readEntry(entry);
@@ -74,9 +77,7 @@ for await (const entry of parse(contentType, body)) {
 // { name: 'attachment', filename: 'example.bin', byteLength: 3 }
 ```
 
-To explicitly skip a part, await `return()` on its `chunks` async iterator or await cancellation of the stream. Before skipping an entry, finish reading or canceling any part you have started. Then await `entry.return()`. It skips any untouched part and scans to the next delimiter. Breaking out of the inner loop or disposing the entry with `await using` calls the same method.
-
-Before advancing or closing the outer iterator, either read the body of any entry you have started to completion or await `entry.return()`. You can close the parser while the current entry is untouched. If a read or skip fails, close the outer parser. An error that escapes the body of the outer `for await` loop closes the parser automatically.
+Canceling `part.chunks` ends that stream. Calling `entry.return()` or breaking out of the inner loop ends that entry's iteration. If a read fails or you stop reading an entry before its body stream reaches EOF, close the outer parser. An error that escapes the body of the outer `for await` loop closes the parser automatically.
 
 The request body must supply `Uint8Array` chunks. The outer parser owns the body reader until the parser finishes or is closed. Leaving the outer `for await` loop early closes the parser. When iterating manually, close it with `await parser.return()` in a `finally` block or use `await using`. Normal completion reads to EOF. Closing the parser early waits for the request body's cancellation to settle and then releases the reader lock. The parser ignores cancellation failures.
 
