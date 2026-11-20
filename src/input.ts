@@ -13,10 +13,10 @@ export class Input {
     protected chunk: Uint8Array;
     protected offset = 0;
     protected ended = false;
-    protected stopped = false;
+    protected disposal?: Promise<void>;
 
-    public constructor(reader?: ReadableStreamDefaultReader<Uint8Array>, initial = empty) {
-        this.reader = reader;
+    public constructor(stream?: ReadableStream<Uint8Array>, initial = empty) {
+        this.reader = stream?.getReader();
         this.chunk = initial;
     }
 
@@ -26,10 +26,6 @@ export class Input {
 
     public getOffset(): number {
         return this.offset;
-    }
-
-    public hasEnded(): boolean {
-        return this.ended;
     }
 
     public advance(length = 1): void {
@@ -43,12 +39,12 @@ export class Input {
     }
 
     public async fill(): Promise<boolean> {
-        if (this.stopped) throw new TypeError('The multipart parser is closed');
+        if (this.disposal) throw new TypeError('The multipart parser is closed');
         this.chunk = empty;
         this.offset = 0;
         while (this.reader && !this.ended) {
             const { value, done } = await this.reader.read();
-            if (this.stopped) throw new TypeError('The multipart parser is closed');
+            if (this.disposal) throw new TypeError('The multipart parser is closed');
             if (done) {
                 this.ended = true;
                 break;
@@ -66,9 +62,22 @@ export class Input {
         return this.getByte();
     }
 
-    public [Symbol.dispose](): void {
-        this.stopped = true;
+    protected async dispose(): Promise<void> {
+        const reader = this.reader;
+        if (!reader) return;
+        this.reader = undefined;
+        try {
+            if (!this.ended) await reader.cancel();
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
+    public [Symbol.asyncDispose](): Promise<void> {
+        if (this.disposal) return this.disposal;
         this.chunk = empty;
         this.offset = 0;
+        // Cache disposal before invoking the stream's cancellation callback.
+        return this.disposal = Promise.resolve().then(() => this.dispose());
     }
 }

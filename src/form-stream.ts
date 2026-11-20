@@ -191,26 +191,16 @@ class EntryParts implements Entry {
 
 export async function* parse(contentType: string, body: ReadableStream<Uint8Array>): AsyncGenerator<Entry, void, void> {
     const boundaryValue = await readBoundary(contentType);
-    const reader = body.getReader();
-    const input = new Input(reader);
-    const boundary = new Boundary(boundaryValue, input);
+    const input = new Input(body);
     let entryParts: EntryParts | undefined;
     let failure: { reason: unknown } | undefined;
-    let cleanup: Promise<void> | undefined;
-    const closeInput = () => cleanup ??= Promise.resolve().then(async () => {
-        input[Symbol.dispose]();
-        try {
-            if (!input.hasEnded()) await reader.cancel();
-        } finally {
-            reader.releaseLock();
-        }
-    });
     const onAbort = (reason: unknown) => {
         failure ??= { reason };
         // EntryParts reports the error immediately while input cleanup runs.
-        void closeInput().catch(() => { });
+        void input[Symbol.asyncDispose]().catch(() => { });
     };
     try {
+        const boundary = new Boundary(boundaryValue, input);
         let delimiter = await boundary.first();
         while (delimiter === 'next') {
             entryParts = new EntryParts(readMetadata(input), boundary, onAbort);
@@ -229,7 +219,7 @@ export async function* parse(contentType: string, body: ReadableStream<Uint8Arra
     } finally {
         entryParts?.abort(failure ? failure.reason : new TypeError('The multipart parser is closed'));
         try {
-            await closeInput();
+            await input[Symbol.asyncDispose]();
         } catch (reason) {
             if (!failure) throw reason;
         }
