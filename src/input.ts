@@ -36,17 +36,6 @@ export abstract class Input {
     public abstract peek(): number | undefined | Promise<number | undefined>;
 }
 
-export class BufferInput extends Input {
-    public constructor(source: Uint8Array) {
-        super();
-        this.chunk = asUint8Array(source);
-    }
-
-    public override peek(): number | undefined {
-        return this.getByte();
-    }
-}
-
 export class StreamInput extends Input implements AsyncDisposable {
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
 
