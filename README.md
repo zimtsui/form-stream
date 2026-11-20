@@ -11,13 +11,13 @@ async function parseRequest(request: Request): Promise<void> {
     const entries = FormStream.parse(contentType, request.body!);
     for await (const entry of entries)
         for await (const part of entry)
-            if (part.type === 'name') {
-                const name: string = await StreamConsumers.text(part.chunks);
-            } else if (part.type === 'filename') {
-                const filename: string = await StreamConsumers.text(part.chunks);
-            } else if (part.type === 'body') {
-                const bytes: Uint8Array = await StreamConsumers.bytes(part.chunks);
-            } else throw new Error();
+            if (part.type === 'name')
+                await StreamConsumers.text(part.chunks);
+            else if (part.type === 'filename')
+                await StreamConsumers.text(part.chunks);
+            else if (part.type === 'body')
+                await StreamConsumers.bytes(part.chunks);
+            else throw new Error();
 }
 ```
 
