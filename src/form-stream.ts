@@ -31,6 +31,10 @@ class PartStream {
         this.part = { type, chunks };
     }
 
+    public hasStarted(): boolean {
+        return this.pending !== undefined || this.skipping !== undefined;
+    }
+
     public getResult(): IteratorReturnResult<Delimiter | void> | undefined {
         if (this.failure) throw this.failure.reason;
         return this.sourceResult;
@@ -84,7 +88,7 @@ class PartStream {
 class EntryParts implements Entry, AsyncIterator<Entry.Part, void, void> {
     protected current?: PartStream;
     protected failure?: { reason: unknown };
-    protected pending = Promise.resolve();
+    protected pending?: Promise<void>;
 
     public constructor(
         protected metadata: ReturnType<typeof readMetadata>,
@@ -96,6 +100,10 @@ class EntryParts implements Entry, AsyncIterator<Entry.Part, void, void> {
         return this;
     }
 
+    public hasStarted(): boolean {
+        return this.pending !== undefined;
+    }
+
     public getDelimiter(): Delimiter | void {
         if (this.failure) throw this.failure.reason;
         return this.current?.getResult()?.value;
@@ -103,7 +111,7 @@ class EntryParts implements Entry, AsyncIterator<Entry.Part, void, void> {
 
     protected enqueue<T>(operation: () => Promise<T>): Promise<T> {
         // Serialize iterator calls while allowing return() before the first next().
-        const result = this.pending.then(operation);
+        const result = (this.pending ?? Promise.resolve()).then(operation);
         this.pending = result.then(() => { }, () => { });
         return result;
     }
@@ -121,11 +129,18 @@ class EntryParts implements Entry, AsyncIterator<Entry.Part, void, void> {
         }
     }
 
+    protected async finishCurrentPart(): Promise<boolean> {
+        if (!this.current || this.current.getResult()) return true;
+        if (this.current.hasStarted()) return false;
+        await this.current.skip();
+        return true;
+    }
+
     public next(): Promise<IteratorResult<Entry.Part, void>> {
         return this.enqueue(async () => {
-            if (this.getDelimiter() !== undefined) return { done: true, value: undefined };
-            if (this.current && !this.current.getResult())
+            if (!await this.finishCurrentPart())
                 throw new TypeError('Consume or cancel the current part before requesting the next part');
+            if (this.getDelimiter() !== undefined) return { done: true, value: undefined };
             const part = await this.nextPart();
             return { done: false, value: part.part };
         });
@@ -133,8 +148,7 @@ class EntryParts implements Entry, AsyncIterator<Entry.Part, void, void> {
 
     public return(): Promise<IteratorReturnResult<void>> {
         return this.enqueue(async () => {
-            if (this.getDelimiter() !== undefined) return { done: true, value: undefined };
-            if (this.current && !this.current.getResult()) {
+            if (!await this.finishCurrentPart()) {
                 const reason = new TypeError('Consume or cancel the current part before skipping the entry');
                 this.abort(reason);
                 this.onInvalidReturn(reason);
@@ -181,6 +195,7 @@ export async function* parse(contentType: string, body: ReadableStream<Uint8Arra
         while (delimiter === 'next') {
             entryParts = new EntryParts(readMetadata(input), boundary, onInvalidReturn);
             yield entryParts;
+            if (!entryParts.hasStarted()) await entryParts.return();
             const next = entryParts.getDelimiter();
             if (next === undefined)
                 throw new TypeError('Consume the current entry or await its iterator return() before advancing');
