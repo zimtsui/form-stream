@@ -3,12 +3,12 @@
 ## Examples
 
 ```ts
-import { parse, type Entry } from '@zimtsui/form-stream';
+import * as FormStream from '@zimtsui/form-stream';
 import * as StreamConsumers from 'node:stream/consumers';
 
 async function parseRequest(request: Request): Promise<void> {
     const contentType = request.headers.get('content-type')!;
-    const entries: AsyncGenerator<Entry, void, void> = parse(contentType, request.body!);
+    const entries = FormStream.parse(contentType, request.body!);
     for await (const entry of entries)
         for await (const part of entry)
             if (part.type === 'name') {
