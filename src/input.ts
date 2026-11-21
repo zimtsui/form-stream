@@ -13,9 +13,14 @@ function asUint8Array(source: Uint8Array): Uint8Array {
     return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
 }
 
-export abstract class Input {
+export class StreamInput implements AsyncDisposable {
     protected chunk: Uint8Array = empty;
     protected offset = 0;
+    protected reader?: ReadableStreamDefaultReader<Uint8Array>;
+
+    public constructor(source: ReadableStream<Uint8Array>) {
+        this.reader = source.getReader();
+    }
 
     public getChunk(): Uint8Array {
         return this.chunk;
@@ -33,17 +38,6 @@ export abstract class Input {
         return this.chunk[this.offset];
     }
 
-    public abstract peek(): number | undefined | Promise<number | undefined>;
-}
-
-export class StreamInput extends Input implements AsyncDisposable {
-    protected reader?: ReadableStreamDefaultReader<Uint8Array>;
-
-    public constructor(source: ReadableStream<Uint8Array>) {
-        super();
-        this.reader = source.getReader();
-    }
-
     public async fill(): Promise<boolean> {
         this.chunk = empty;
         this.offset = 0;
@@ -58,7 +52,7 @@ export class StreamInput extends Input implements AsyncDisposable {
         return false;
     }
 
-    public override async peek(): Promise<number | undefined> {
+    public async peek(): Promise<number | undefined> {
         if (this.getByte() === undefined) await this.fill();
         return this.getByte();
     }
