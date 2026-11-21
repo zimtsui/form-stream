@@ -19,7 +19,7 @@ export async function* parse(
     if (!Number.isSafeInteger(maxHeaderSize) || maxHeaderSize < 0)
         throw new RangeError('maxHeaderSize must be a non-negative safe integer');
     const boundaryValue = readBoundary(contentType);
-    await using input = new StreamInput(body);
+    using input = new StreamInput(body);
     const boundary = new Boundary(boundaryValue, input);
     let nextDelimiter: Delimiter | undefined = await boundary.first();
 

@@ -13,7 +13,7 @@ function asUint8Array(source: Uint8Array): Uint8Array {
     return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
 }
 
-export class StreamInput implements AsyncDisposable {
+export class StreamInput implements Disposable {
     protected chunk: Uint8Array = empty;
     protected offset = 0;
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
@@ -57,13 +57,13 @@ export class StreamInput implements AsyncDisposable {
         return this.getByte();
     }
 
-    public async [Symbol.asyncDispose](): Promise<void> {
+    public [Symbol.dispose](): void {
         const reader = this.reader;
         this.reader = undefined;
         this.chunk = empty;
         this.offset = 0;
         if (!reader) return;
-        await reader.cancel().catch(() => { });
+        reader.cancel().catch(() => { });
         reader.releaseLock();
     }
 }

@@ -30,4 +30,4 @@ async function parseRequest(request: Request): Promise<void> {
 -   请求头和 form entry 中的 `Content-Type` 被直接使用 `node:util` 的 `MIMEType` 解析，不一定完全符合标准。
 -   部件的 `Content-Type` 为 `multipart/mixed` 时抛出 `MultipartMixedError`。
 -   遇到 `Content-Disposition` 中 `name` 或 `filename` parameter continuation 时抛出 `ParameterContinuationError`。
--   由于 `multipart/form-data` 的[坑](./TRAPS.md)太多了，本软件仅支持 ASCII 作为表单编码，按照 HTML 规则而非 RFC 7578/5322 规则。
+-   由于 [`multipart/form-data` 的坑](./TRAPS.md)太多了，本软件仅支持 ASCII 作为表单编码，按照 HTML 规则而非 RFC 7578/5322 规则。
