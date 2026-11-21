@@ -10,7 +10,7 @@ import * as StreamConsumers from 'node:stream/consumers';
 import { MIMEType } from 'node:util';
 import http from 'node:http';
 
-async function receive(request: Request): Promise<void> {
+export async function receive(request: Request): Promise<void> {
     const contentType = new MIMEType(request.headers.get('content-type')!);
     const options: FormStream.Options = { maxHeaderSize: http.maxHeaderSize };
     const entries = FormStream.parse(contentType, request.body!, options);
