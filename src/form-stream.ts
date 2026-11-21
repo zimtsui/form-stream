@@ -5,6 +5,11 @@ import { StreamInput } from './input.ts';
 import { readBoundary, readMetadata } from './mime.ts';
 import type { Entry } from './types.ts';
 
+
+
+/**
+ * @param body ownership NOT transferred
+ */
 export async function* parse(contentType: MIMEType, body: ReadableStream<Uint8Array>): AsyncGenerator<Entry, void, void> {
     const boundaryValue = readBoundary(contentType);
     await using input = new StreamInput(body);
