@@ -5,8 +5,7 @@
     ".": "./build/exports.js",
     "./meter": "./build/meter.js",
     "./file-cache": "./build/file-cache.js",
-    "./form-cache": "./build/form-cache.js",
-    "./request-cache": "./build/request-cache.js"
+    "./form-cache": "./build/form-cache.js"
   },
   "description": "",
   "type": "module",
