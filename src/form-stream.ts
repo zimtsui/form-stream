@@ -1,7 +1,7 @@
 import { maxHeaderSize as defaultMaxHeaderSize } from 'node:http';
 import type { MIMEType } from 'node:util';
 import { Boundary, type Delimiter } from './boundary.ts';
-import { decodeBody } from './encoding.ts';
+import { createBodyDecoder } from './encoding.ts';
 import { StreamInput } from './input.ts';
 import { readBoundary, readMetadata } from './mime.ts';
 import type { Entry } from './types.ts';
@@ -22,14 +22,39 @@ export async function* parse(
     const boundary = new Boundary(boundaryValue, input);
     let nextDelimiter: Delimiter | undefined = await boundary.first();
 
-    async function* readBody(): AsyncGenerator<Uint8Array, void, void> {
-        nextDelimiter = yield* boundary.body();
-    }
-
     while (nextDelimiter === 'next') {
         nextDelimiter = undefined;
         const { encoding, ...metadata } = await readMetadata(input, maxHeaderSize);
-        yield { ...metadata, chunks: ReadableStream.from(decodeBody(readBody(), encoding)) };
+        const readBody = boundary.body();
+        const decoder = createBodyDecoder(encoding);
+        let cancelled = false;
+        const chunks = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+                let emitted = false;
+                const enqueue = (chunk: Uint8Array) => {
+                    controller.enqueue(chunk);
+                    emitted = true;
+                };
+                while (!emitted) {
+                    const result = await readBody();
+                    if (cancelled) return;
+                    if (typeof result === 'string') {
+                        decoder?.finish(enqueue);
+                        nextDelimiter = result;
+                        controller.close();
+                        return;
+                    }
+                    if (decoder) decoder.write(result, enqueue);
+                    else enqueue(result);
+                }
+            },
+            cancel(reason) {
+                cancelled = true;
+                nextDelimiter = undefined;
+                input.close(reason);
+            },
+        }, { highWaterMark: 0 });
+        yield { ...metadata, chunks };
     }
     if (nextDelimiter === 'close') {
         while (await input.fill()) { }

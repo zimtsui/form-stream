@@ -4,32 +4,45 @@ const latin1Decoder = new TextDecoder('latin1');
 
 export type TransferEncoding = 'identity' | 'base64' | 'quoted-printable';
 
-export function decodeBody(body: AsyncIterable<Uint8Array>, encoding: TransferEncoding): AsyncIterable<Uint8Array> {
+interface EmitChunk {
+    (chunk: Uint8Array): void;
+}
+
+interface BodyDecoder {
+    write(chunk: Uint8Array, emit: EmitChunk): void;
+    finish(emit: EmitChunk): void;
+}
+
+export function createBodyDecoder(encoding: TransferEncoding): BodyDecoder | undefined {
     switch (encoding) {
-        case 'identity': return body;
-        case 'base64': return decodeBase64(body);
-        case 'quoted-printable': return decodeQuotedPrintable(body);
+        case 'identity': return;
+        case 'base64': return base64Decoder();
+        case 'quoted-printable': return quotedPrintableDecoder();
     }
 }
 
-async function* decodeBase64(body: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array, void, void> {
+function base64Decoder(): BodyDecoder {
     let remainder = '';
     let padded = false;
-    for await (const chunk of body) {
-        const encoded = remainder + latin1Decoder.decode(chunk).replace(/[^A-Za-z0-9+/=]/g, '');
-        if (padded && encoded) throw new SyntaxError('Unexpected data after base64 padding');
-        const end = encoded.length - encoded.length % 4;
-        remainder = encoded.slice(end);
-        if (!end) continue;
+    return {
+        write(chunk, emit) {
+            const encoded = remainder + latin1Decoder.decode(chunk).replace(/[^A-Za-z0-9+/=]/g, '');
+            if (padded && encoded) throw new SyntaxError('Unexpected data after base64 padding');
+            const end = encoded.length - encoded.length % 4;
+            remainder = encoded.slice(end);
+            if (!end) return;
 
-        const groups = encoded.slice(0, end);
-        if (groups.includes('=')) {
-            if (remainder) throw new SyntaxError('Invalid base64 padding');
-            padded = true;
-        }
-        yield Uint8Array.fromBase64(groups, { lastChunkHandling: 'strict' });
-    }
-    if (remainder) throw new SyntaxError('Incomplete base64 group');
+            const groups = encoded.slice(0, end);
+            if (groups.includes('=')) {
+                if (remainder) throw new SyntaxError('Invalid base64 padding');
+                padded = true;
+            }
+            emit(Uint8Array.fromBase64(groups, { lastChunkHandling: 'strict' }));
+        },
+        finish() {
+            if (remainder) throw new SyntaxError('Incomplete base64 group');
+        },
+    };
 }
 
 const equals = 0x3d;
@@ -65,32 +78,36 @@ function decodeQuotedPrintableLine(line: Uint8Array, length: number, terminated:
     return output.subarray(0, offset);
 }
 
-async function* decodeQuotedPrintable(body: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array, void, void> {
+function quotedPrintableDecoder(): BodyDecoder {
     const line = new Uint8Array(76);
     let length = 0;
     let contentLength = 0;
     let afterCR = false;
-    for await (const chunk of body) {
-        for (const byte of chunk) {
-            if (afterCR) {
-                if (byte !== LF) throw new SyntaxError('Expected CRLF in quoted-printable body');
-                const output = decodeQuotedPrintableLine(line, contentLength, true);
-                length = 0;
-                contentLength = 0;
-                afterCR = false;
-                if (output.length) yield output;
-            } else if (byte === CR) {
-                afterCR = true;
-            } else if (byte === LF) {
-                throw new SyntaxError('Expected CRLF in quoted-printable body');
-            } else {
-                // Allow transport padding of any length at the end of the line.
-                if (length < line.length) line[length++] = byte;
-                else if (!isSpace(byte)) throw new SyntaxError('Quoted-printable line exceeds 76 characters');
-                if (!isSpace(byte)) contentLength = length;
+    return {
+        write(chunk, emit) {
+            for (const byte of chunk) {
+                if (afterCR) {
+                    if (byte !== LF) throw new SyntaxError('Expected CRLF in quoted-printable body');
+                    const output = decodeQuotedPrintableLine(line, contentLength, true);
+                    length = 0;
+                    contentLength = 0;
+                    afterCR = false;
+                    if (output.length) emit(output);
+                } else if (byte === CR) {
+                    afterCR = true;
+                } else if (byte === LF) {
+                    throw new SyntaxError('Expected CRLF in quoted-printable body');
+                } else {
+                    // Allow transport padding of any length at the end of the line.
+                    if (length < line.length) line[length++] = byte;
+                    else if (!isSpace(byte)) throw new SyntaxError('Quoted-printable line exceeds 76 characters');
+                    if (!isSpace(byte)) contentLength = length;
+                }
             }
-        }
-    }
-    if (afterCR) throw new SyntaxError('Incomplete quoted-printable line break');
-    if (contentLength) yield decodeQuotedPrintableLine(line, contentLength, false);
+        },
+        finish(emit) {
+            if (afterCR) throw new SyntaxError('Incomplete quoted-printable line break');
+            if (contentLength) emit(decodeQuotedPrintableLine(line, contentLength, false));
+        },
+    };
 }

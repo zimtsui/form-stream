@@ -78,44 +78,40 @@ export class Boundary {
         throw new SyntaxError('Missing first multipart delimiter');
     }
 
-    public async *body(): AsyncGenerator<Uint8Array, Delimiter, void> {
+    public body(): () => Promise<Uint8Array | Delimiter> {
         const input = this.input;
         // In a header-only part, the CRLF consumed after the headers is
         // already the leading CRLF of the delimiter.
         let matched = 2;
         let consumedPrefix = matched;
-        while (input.getByte() !== undefined || await input.fill()) {
-            const chunk = input.getChunk();
-            const offset = input.getOffset();
-            const previous = matched;
-            matched = this.scan(Math.min(chunk.length, offset + outputChunkSize), matched);
+        return async () => {
+            while (matched !== this.pattern.length) {
+                if (input.getByte() === undefined && !await input.fill())
+                    throw new SyntaxError('Unexpected end of multipart body');
+                const chunk = input.getChunk();
+                const offset = input.getOffset();
+                const previous = matched;
+                matched = this.scan(Math.min(chunk.length, offset + outputChunkSize), matched);
 
-            // The uncommitted bytes consist of the old prefix and the bytes
-            // just scanned. Only the new matching suffix needs to be held back.
-            const length = previous + input.getOffset() - offset - matched;
-            if (length > 0) {
+                // The uncommitted bytes consist of the old prefix and the bytes
+                // just scanned. Only the new matching suffix needs to be held back.
+                const length = previous + input.getOffset() - offset - matched;
+                if (length <= 0) continue;
                 const prefixLength = Math.min(previous, length);
                 const prefixStart = Math.min(consumedPrefix, prefixLength);
                 consumedPrefix -= prefixStart;
+                if (length === prefixStart) continue;
                 const end = offset + length - prefixLength;
-                if (length > prefixStart) {
-                    if (prefixLength === prefixStart) {
-                        yield chunk.slice(offset, end);
-                    } else {
-                        const output = new Uint8Array(length - prefixStart);
-                        output.set(this.pattern.subarray(prefixStart, prefixLength));
-                        output.set(chunk.subarray(offset, end), prefixLength - prefixStart);
-                        yield output;
-                    }
-                }
+                if (prefixLength === prefixStart) return chunk.slice(offset, end);
+                const output = new Uint8Array(length - prefixStart);
+                output.set(this.pattern.subarray(prefixStart, prefixLength));
+                output.set(chunk.subarray(offset, end), prefixLength - prefixStart);
+                return output;
             }
-            if (matched === this.pattern.length) {
-                // RFC 2046 reserves the boundary prefix at the start of a body line.
-                const delimiter = await this.suffix();
-                if (delimiter === undefined) throw new SyntaxError('Invalid multipart delimiter suffix');
-                return delimiter;
-            }
-        }
-        throw new SyntaxError('Unexpected end of multipart body');
+            // RFC 2046 reserves the boundary prefix at the start of a body line.
+            const delimiter = await this.suffix();
+            if (delimiter === undefined) throw new SyntaxError('Invalid multipart delimiter suffix');
+            return delimiter;
+        };
     }
 }

@@ -60,7 +60,7 @@ export class StreamInput implements Disposable {
         return this.getByte();
     }
 
-    protected close(reason?: unknown): void {
+    public close(reason?: unknown): void {
         const reader = this.reader;
         const abortListener = this.abortListener;
         this.reader = undefined;

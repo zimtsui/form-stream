@@ -1,7 +1,7 @@
 import * as StreamConsumers from 'node:stream/consumers';
 import type { FormData, FormDataEntryValue } from 'undici';
 import { parse } from './form-stream.ts';
-import { meter } from './meter.ts';
+import { meter, type SizeOutOfRangeError } from './meter.ts';
 import { FileCache } from './file-cache.ts';
 import { MIMEType, TextDecoder } from 'node:util';
 
@@ -21,6 +21,7 @@ export class FormCache implements Disposable, FormData {
      * @throws {@link TypeError}
      * @throws {@link RangeError}
      * @throws {@link SyntaxError}
+     * @throws {@link SizeOutOfRangeError}
      */
     public static async save({
         bodyReadableStream,
@@ -31,22 +32,29 @@ export class FormCache implements Disposable, FormData {
     }: FormCache.Params): Promise<FormCache> {
         using ds = new DisposableStack();
         const pairs: [string, string | FileCache][] = [];
-        for await (const { name, filename, contentType: entryType, chunks } of parse(new MIMEType(contentType), bodyReadableStream, { signal })) {
-            if (filename !== undefined || entryType?.essence === 'application/octet-stream') {
+        const entries = parse(new MIMEType(contentType), bodyReadableStream, { signal });
+        for await (const { name, filename, contentType: entryType, chunks } of entries) {
+            if (filename !== undefined) {
                 const file = ds.use(await FileCache.save({
                     fileReadableStream: chunks,
                     tempDirPath,
-                    fileName: filename ?? '',
+                    fileName: filename,
                     mimeType: entryType ?? new MIMEType('text/plain'),
                     signal,
                 }));
                 pairs.push([name, file]);
             } else {
                 const charset = entryType?.params.get('charset') ?? 'utf-8';
-                const decoder = await Promise.try(() => new TextDecoder(charset, { ignoreBOM: true }))
-                    .catch(e => Promise.reject(e instanceof RangeError ? new SyntaxError(`Unsupported charset for multipart field ${name}.`, { cause: e }) : e));
-                const bytes = await StreamConsumers.arrayBuffer(chunks.pipeThrough(meter(maxTextEntrySizeByte)))
-                    .catch(e => Promise.reject(e instanceof RangeError ? new RangeError(`Multipart field ${name} is required to be at most ${maxTextEntrySizeByte} bytes.`, { cause: e }) : e))
+                const decoder = (() => {
+                    try {
+                        return new TextDecoder(charset, { ignoreBOM: true });
+                    } catch (error) {
+                        if (error instanceof RangeError)
+                            throw new SyntaxError(`Unsupported charset for multipart field ${name}.`, { cause: error });
+                        throw error;
+                    }
+                })();
+                const bytes = await StreamConsumers.arrayBuffer(chunks.pipeThrough(meter(maxTextEntrySizeByte)));
                 pairs.push([name, decoder.decode(bytes)]);
             }
         }
@@ -69,19 +77,15 @@ export class FormCache implements Disposable, FormData {
     }
 
     public keys() {
-        return this.pairs.map(([key]) => key)[Symbol.iterator]();
+        return this.entries().map(([key]) => key);
     }
 
     public values() {
-        return this.pairs.map(([, value]) => value)[Symbol.iterator]();
+        return this.entries().map(([, value]) => value);
     }
 
     public entries() {
         return this.pairs[Symbol.iterator]();
-    }
-
-    public rawEntries() {
-        return this.entries();
     }
 
     public [Symbol.iterator]() {
@@ -109,8 +113,7 @@ export class FormCache implements Disposable, FormData {
     }
 
     public get(name: string): FormDataEntryValue | null {
-        const values = this.getAll(name);
-        return values.length ? values[0]! : null;
+        return this.pairs.find(([key]) => key === name)?.[1] ?? null;
     }
 
 }
