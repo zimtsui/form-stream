@@ -8,6 +8,9 @@ import type { Entry } from './types.ts';
 
 
 /**
+ * If reading an entry's body fails, the next call to `next()` rejects with the
+ * same reason and closes the iterator.
+ *
  * @param body ownership NOT transferred
  */
 export async function* parse(
@@ -28,6 +31,7 @@ export async function* parse(
         const readBody = boundary.body();
         const decoder = createBodyDecoder(encoding);
         let cancelled = false;
+        let bodyFailure: { reason: unknown } | undefined;
         const chunks = new ReadableStream<Uint8Array>({
             async pull(controller) {
                 let emitted = false;
@@ -35,17 +39,22 @@ export async function* parse(
                     controller.enqueue(chunk);
                     emitted = true;
                 };
-                while (!emitted) {
-                    const result = await readBody();
-                    if (cancelled) return;
-                    if (typeof result === 'string') {
-                        decoder?.finish(enqueue);
-                        nextDelimiter = result;
-                        controller.close();
-                        return;
+                try {
+                    while (!emitted) {
+                        const result = await readBody();
+                        if (cancelled) return;
+                        if (typeof result === 'string') {
+                            decoder?.finish(enqueue);
+                            nextDelimiter = result;
+                            controller.close();
+                            return;
+                        }
+                        if (decoder) decoder.write(result, enqueue);
+                        else enqueue(result);
                     }
-                    if (decoder) decoder.write(result, enqueue);
-                    else enqueue(result);
+                } catch (reason) {
+                    if (!cancelled) bodyFailure = { reason };
+                    throw reason;
                 }
             },
             cancel(reason) {
@@ -55,6 +64,7 @@ export async function* parse(
             },
         }, { highWaterMark: 0 });
         yield { ...metadata, chunks };
+        if (bodyFailure) throw bodyFailure.reason;
     }
     if (nextDelimiter === 'close') {
         while (await input.fill()) { }

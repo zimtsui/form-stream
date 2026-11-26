@@ -1,4 +1,5 @@
 import { addAbortListener } from 'node:events';
+import { setImmediate } from 'node:timers/promises';
 
 
 const empty = new Uint8Array(0);
@@ -58,6 +59,9 @@ export class StreamInput implements Disposable {
                 this.chunk = value;
                 return true;
             }
+            // A source that keeps producing empty chunks can starve the event loop.
+            await setImmediate();
+            this.signal?.throwIfAborted();
         }
         return false;
     }

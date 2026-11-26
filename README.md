@@ -26,7 +26,6 @@ export async function receive(request: Request): Promise<void> {
 
 ## Compromises
 
--   本软件不考虑健壮性，不按契约使用可能会导致不可恢复的异常和静默的异常。
 -   请求头和 Form entry 中的 `Content-Type` 被直接使用 `node:util` 的 `MIMEType` 解析，不一定完全符合标准。
 -   Form entry 的 `Content-Type` 为 `multipart/mixed` 时抛出 `MultipartMixedError`。
 -   遇到 `Content-Disposition` 中 `name` 或 `filename` parameter continuation 时抛出 `ParameterContinuationError`。
