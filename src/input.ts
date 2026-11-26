@@ -17,7 +17,7 @@ export class StreamInput implements Disposable {
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
     protected abortListener?: Disposable;
 
-    public constructor(source: ReadableStream<Uint8Array>, signal?: AbortSignal) {
+    public constructor(source: ReadableStream<Uint8Array>, protected readonly signal?: AbortSignal) {
         this.reader = source.getReader();
         if (!signal) return;
         if (signal.aborted) this.close(signal.reason);
@@ -25,27 +25,34 @@ export class StreamInput implements Disposable {
     }
 
     public getChunk(): Uint8Array {
+        this.signal?.throwIfAborted();
         return this.chunk;
     }
 
     public getOffset(): number {
+        this.signal?.throwIfAborted();
         return this.offset;
     }
 
     public advance(length = 1): void {
+        this.signal?.throwIfAborted();
         this.offset += length;
     }
 
     public getByte(): number | undefined {
+        this.signal?.throwIfAborted();
         return this.chunk[this.offset];
     }
 
     public async fill(): Promise<boolean> {
+        this.signal?.throwIfAborted();
         this.chunk = empty;
         this.offset = 0;
         while (this.reader) {
             const reader = this.reader;
             const { value, done } = await reader.read();
+            // Cancelling the reader resolves a pending read as done.
+            this.signal?.throwIfAborted();
             if (reader !== this.reader || done) break;
             if (value.byteLength) {
                 this.chunk = value;

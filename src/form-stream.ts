@@ -64,6 +64,6 @@ export async function* parse(
 
 export interface Options {
     maxHeaderSize?: number;
-    /** Cancels the input with the signal's reason. The parser handles cancellation as end of input. */
+    /** Cancels the input and causes pending and subsequent input reads to fail with the signal's reason. */
     signal?: AbortSignal;
 }
