@@ -1,5 +1,6 @@
-import { Buffer } from 'node:buffer';
 import { CR, LF, isSpace } from './input.ts';
+
+const latin1Decoder = new TextDecoder('latin1');
 
 export type TransferEncoding = 'identity' | 'base64' | 'quoted-printable';
 
@@ -15,20 +16,18 @@ async function* decodeBase64(body: AsyncIterable<Uint8Array>): AsyncGenerator<Ui
     let remainder = '';
     let padded = false;
     for await (const chunk of body) {
-        const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-        const encoded = remainder + bytes.toString('latin1').replace(/[^A-Za-z0-9+/=]/g, '');
+        const encoded = remainder + latin1Decoder.decode(chunk).replace(/[^A-Za-z0-9+/=]/g, '');
         if (padded && encoded) throw new SyntaxError('Unexpected data after base64 padding');
         const end = encoded.length - encoded.length % 4;
         remainder = encoded.slice(end);
         if (!end) continue;
 
         const groups = encoded.slice(0, end);
-        const decoded = Buffer.from(groups, 'base64');
         if (groups.includes('=')) {
-            if (remainder || decoded.toString('base64') !== groups) throw new SyntaxError('Invalid base64 padding');
+            if (remainder) throw new SyntaxError('Invalid base64 padding');
             padded = true;
         }
-        yield Uint8Array.from(decoded);
+        yield Uint8Array.fromBase64(groups, { lastChunkHandling: 'strict' });
     }
     if (remainder) throw new SyntaxError('Incomplete base64 group');
 }

@@ -1,3 +1,6 @@
+import { addAbortListener } from 'node:events';
+
+
 const empty = new Uint8Array(0);
 
 export const CR = 0x0d;
@@ -8,18 +11,17 @@ export function isSpace(byte: number | undefined): boolean {
     return byte === 0x20 || byte === 0x09;
 }
 
-function asUint8Array(source: Uint8Array): Uint8Array {
-    // Use Uint8Array.prototype.slice even when the source is a Buffer.
-    return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
-}
-
 export class StreamInput implements Disposable {
     protected chunk: Uint8Array = empty;
     protected offset = 0;
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
+    protected abortListener?: Disposable;
 
-    public constructor(source: ReadableStream<Uint8Array>) {
+    public constructor(source: ReadableStream<Uint8Array>, signal?: AbortSignal) {
         this.reader = source.getReader();
+        if (!signal) return;
+        if (signal.aborted) this.close(signal.reason);
+        else this.abortListener = addAbortListener(signal, () => this.close(signal.reason));
     }
 
     public getChunk(): Uint8Array {
@@ -42,10 +44,11 @@ export class StreamInput implements Disposable {
         this.chunk = empty;
         this.offset = 0;
         while (this.reader) {
-            const { value, done } = await this.reader.read();
-            if (done) break;
+            const reader = this.reader;
+            const { value, done } = await reader.read();
+            if (reader !== this.reader || done) break;
             if (value.byteLength) {
-                this.chunk = asUint8Array(value);
+                this.chunk = value;
                 return true;
             }
         }
@@ -57,13 +60,20 @@ export class StreamInput implements Disposable {
         return this.getByte();
     }
 
-    public [Symbol.dispose](): void {
+    protected close(reason?: unknown): void {
         const reader = this.reader;
+        const abortListener = this.abortListener;
         this.reader = undefined;
+        this.abortListener = undefined;
         this.chunk = empty;
         this.offset = 0;
+        abortListener?.[Symbol.dispose]();
         if (!reader) return;
-        reader.cancel().catch(() => { });
+        reader.cancel(reason).catch(() => { });
         reader.releaseLock();
+    }
+
+    public [Symbol.dispose](): void {
+        this.close();
     }
 }

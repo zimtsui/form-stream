@@ -4,8 +4,7 @@ import { Boundary, type Delimiter } from './boundary.ts';
 import { decodeBody } from './encoding.ts';
 import { StreamInput } from './input.ts';
 import { readBoundary, readMetadata } from './mime.ts';
-import type { Entry, Options } from './types.ts';
-
+import type { Entry } from './types.ts';
 
 
 /**
@@ -14,12 +13,12 @@ import type { Entry, Options } from './types.ts';
 export async function* parse(
     contentType: MIMEType,
     body: ReadableStream<Uint8Array>,
-    { maxHeaderSize = defaultMaxHeaderSize }: Options = {},
+    { maxHeaderSize = defaultMaxHeaderSize, signal }: Options = {},
 ): AsyncGenerator<Entry, void, void> {
     if (!Number.isSafeInteger(maxHeaderSize) || maxHeaderSize < 0)
         throw new RangeError('maxHeaderSize must be a non-negative safe integer');
     const boundaryValue = readBoundary(contentType);
-    using input = new StreamInput(body);
+    using input = new StreamInput(body, signal);
     const boundary = new Boundary(boundaryValue, input);
     let nextDelimiter: Delimiter | undefined = await boundary.first();
 
@@ -35,4 +34,11 @@ export async function* parse(
     if (nextDelimiter === 'close') {
         while (await input.fill()) { }
     }
+}
+
+
+export interface Options {
+    maxHeaderSize?: number;
+    /** Cancels the input with the signal's reason. The parser handles cancellation as end of input. */
+    signal?: AbortSignal;
 }

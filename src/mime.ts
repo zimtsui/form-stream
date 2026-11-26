@@ -1,10 +1,11 @@
-import { Buffer, isAscii } from 'node:buffer';
+import { isAscii } from 'node:buffer';
 import { MIMEType } from 'node:util';
 import type { TransferEncoding } from './encoding.ts';
 import { CR, LF, type StreamInput } from './input.ts';
 import { MultipartMixedError, ParameterContinuationError, type Entry } from './types.ts';
 
 const tspecials = '()<>@,;:\\"/[]?=';
+const headerDecoder = new TextDecoder();
 
 type DispositionMetadata = Pick<Entry, 'name' | 'filename'>;
 type BodyMetadata = Omit<Entry, 'chunks'> & { encoding: TransferEncoding };
@@ -37,9 +38,9 @@ async function readHeaderBlock(input: StreamInput, maxHeaderSize: number): Promi
             if ((input.getByte() ?? await input.peek()) !== LF)
                 throw new SyntaxError('Expected CRLF after MIME headers');
             input.advance();
-            const headers = Buffer.concat(chunks, maxHeaderSize - remaining);
+            const headers = await new Blob(chunks).bytes();
             if (!isAscii(headers)) throw new SyntaxError('Expected ASCII MIME headers');
-            return headers.toString('ascii');
+            return headerDecoder.decode(headers);
         }
     }
     throw new SyntaxError('Unexpected end of MIME headers');

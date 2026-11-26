@@ -13,7 +13,7 @@ class Transformeter implements Transformer<Uint8Array, Uint8Array> {
 }
 
 
-export function streameter(limit: number): TransformStream<Uint8Array> {
+export function meter(limit: number): TransformStream<Uint8Array> {
     const transformeter = new Transformeter(limit);
     return new TransformStream<Uint8Array, Uint8Array>(transformeter);
 }

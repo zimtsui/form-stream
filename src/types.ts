@@ -1,10 +1,6 @@
 import type { MIMEType } from 'node:util';
 
 
-export interface Options {
-    maxHeaderSize?: number;
-}
-
 export interface Entry {
     name: string;
     filename?: string;
