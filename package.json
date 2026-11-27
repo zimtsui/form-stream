@@ -1,6 +1,6 @@
 {
   "name": "@zimtsui/form-stream",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "exports": {
     ".": "./build/exports.js",
     "./meter": "./build/meter.js"
