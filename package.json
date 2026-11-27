@@ -3,9 +3,7 @@
   "version": "0.0.6",
   "exports": {
     ".": "./build/exports.js",
-    "./meter": "./build/meter.js",
-    "./file-cache": "./build/file-cache.js",
-    "./form-cache": "./build/form-cache.js"
+    "./meter": "./build/meter.js"
   },
   "description": "",
   "type": "module",
@@ -28,8 +26,5 @@
   },
   "dependencies": {
     "@types/node": "^24.19.2"
-  },
-  "peerDependencies": {
-    "undici": "^8.13.1"
   }
 }
