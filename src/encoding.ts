@@ -1,4 +1,5 @@
 import { CR, LF, isSpace } from './input.ts';
+import { RequestSyntaxError } from './types.ts';
 
 const latin1Decoder = new TextDecoder('latin1');
 
@@ -27,20 +28,28 @@ function base64Decoder(): BodyDecoder {
     return {
         write(chunk, emit) {
             const encoded = remainder + latin1Decoder.decode(chunk).replace(/[^A-Za-z0-9+/=]/g, '');
-            if (padded && encoded) throw new SyntaxError('Unexpected data after base64 padding');
+            if (padded && encoded) throw new RequestSyntaxError('Unexpected data after base64 padding');
             const end = encoded.length - encoded.length % 4;
             remainder = encoded.slice(end);
             if (!end) return;
 
             const groups = encoded.slice(0, end);
             if (groups.includes('=')) {
-                if (remainder) throw new SyntaxError('Invalid base64 padding');
+                if (remainder) throw new RequestSyntaxError('Invalid base64 padding');
                 padded = true;
             }
-            emit(Uint8Array.fromBase64(groups, { lastChunkHandling: 'strict' }));
+            let decoded: Uint8Array;
+            try {
+                decoded = Uint8Array.fromBase64(groups, { lastChunkHandling: 'strict' });
+            } catch (error) {
+                if (error instanceof SyntaxError)
+                    throw new RequestSyntaxError(error.message, { cause: error });
+                throw error;
+            }
+            emit(decoded);
         },
         finish() {
-            if (remainder) throw new SyntaxError('Incomplete base64 group');
+            if (remainder) throw new RequestSyntaxError('Incomplete base64 group');
         },
     };
 }
@@ -52,7 +61,7 @@ function hexDigit(byte: number | undefined): number {
         if (byte >= 0x30 && byte <= 0x39) return byte - 0x30;
         if (byte >= 0x41 && byte <= 0x46) return byte - 0x41 + 10;
     }
-    throw new SyntaxError('Invalid quoted-printable escape');
+    throw new RequestSyntaxError('Invalid quoted-printable escape');
 }
 
 function decodeQuotedPrintableLine(line: Uint8Array, length: number, terminated: boolean): Uint8Array {
@@ -64,10 +73,10 @@ function decodeQuotedPrintableLine(line: Uint8Array, length: number, terminated:
     for (let index = 0; index < end; index++) {
         const byte = line[index]!;
         if (byte === equals) {
-            if (index + 2 >= end) throw new SyntaxError('Incomplete quoted-printable escape');
+            if (index + 2 >= end) throw new RequestSyntaxError('Incomplete quoted-printable escape');
             output[offset++] = hexDigit(line[++index]) * 16 + hexDigit(line[++index]);
         } else {
-            if (!isSpace(byte) && (byte < 0x21 || byte > 0x7e)) throw new SyntaxError('Invalid quoted-printable byte');
+            if (!isSpace(byte) && (byte < 0x21 || byte > 0x7e)) throw new RequestSyntaxError('Invalid quoted-printable byte');
             output[offset++] = byte;
         }
     }
@@ -87,7 +96,7 @@ function quotedPrintableDecoder(): BodyDecoder {
         write(chunk, emit) {
             for (const byte of chunk) {
                 if (afterCR) {
-                    if (byte !== LF) throw new SyntaxError('Expected CRLF in quoted-printable body');
+                    if (byte !== LF) throw new RequestSyntaxError('Expected CRLF in quoted-printable body');
                     const output = decodeQuotedPrintableLine(line, contentLength, true);
                     length = 0;
                     contentLength = 0;
@@ -96,17 +105,17 @@ function quotedPrintableDecoder(): BodyDecoder {
                 } else if (byte === CR) {
                     afterCR = true;
                 } else if (byte === LF) {
-                    throw new SyntaxError('Expected CRLF in quoted-printable body');
+                    throw new RequestSyntaxError('Expected CRLF in quoted-printable body');
                 } else {
                     // Allow transport padding of any length at the end of the line.
                     if (length < line.length) line[length++] = byte;
-                    else if (!isSpace(byte)) throw new SyntaxError('Quoted-printable line exceeds 76 characters');
+                    else if (!isSpace(byte)) throw new RequestSyntaxError('Quoted-printable line exceeds 76 characters');
                     if (!isSpace(byte)) contentLength = length;
                 }
             }
         },
         finish(emit) {
-            if (afterCR) throw new SyntaxError('Incomplete quoted-printable line break');
+            if (afterCR) throw new RequestSyntaxError('Incomplete quoted-printable line break');
             if (contentLength) emit(decodeQuotedPrintableLine(line, contentLength, false));
         },
     };

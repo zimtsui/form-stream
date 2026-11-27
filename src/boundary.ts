@@ -1,4 +1,5 @@
 import { CR, LF, isSpace, outputChunkSize, type StreamInput } from './input.ts';
+import { RequestSyntaxError } from './types.ts';
 
 export type Delimiter = 'next' | 'close';
 
@@ -32,13 +33,14 @@ export class Boundary {
         return matched;
     }
 
-    protected async suffix(): Promise<Delimiter | undefined> {
+    protected async suffix(): Promise<Delimiter | 'missing' | 'invalid'> {
         const input = this.input;
         let byte = input.getByte() ?? await input.peek();
         let closing = false;
         if (byte === dash) {
             input.advance();
-            if ((input.getByte() ?? await input.peek()) !== dash) return;
+            byte = input.getByte() ?? await input.peek();
+            if (byte !== dash) return byte === undefined ? 'missing' : 'invalid';
             input.advance();
             closing = true;
             byte = input.getByte() ?? await input.peek();
@@ -47,10 +49,11 @@ export class Boundary {
             input.advance();
             byte = input.getByte() ?? await input.peek();
         }
-        if (byte === undefined && closing) return 'close';
-        if (byte !== CR) return;
+        if (byte === undefined) return closing ? 'close' : 'missing';
+        if (byte !== CR) return 'invalid';
         input.advance();
-        if ((input.getByte() ?? await input.peek()) !== LF) return;
+        byte = input.getByte() ?? await input.peek();
+        if (byte !== LF) return byte === undefined ? 'missing' : 'invalid';
         input.advance();
         return closing ? 'close' : 'next';
     }
@@ -75,7 +78,7 @@ export class Boundary {
                 matched = delimiter === 'close' ? 2 : 0;
             }
         }
-        throw new SyntaxError('Missing first multipart delimiter');
+        throw new RequestSyntaxError('Missing first multipart delimiter');
     }
 
     public body(): () => Promise<Uint8Array | Delimiter> {
@@ -86,8 +89,10 @@ export class Boundary {
         let consumedPrefix = matched;
         return async () => {
             while (matched !== this.pattern.length) {
-                if (input.getByte() === undefined && !await input.fill())
-                    throw new SyntaxError('Unexpected end of multipart body');
+                if (input.getByte() === undefined && !await input.fill()) {
+                    const ErrorType = input.reachedEOF ? RequestSyntaxError : SyntaxError;
+                    throw new ErrorType('Unexpected end of multipart body');
+                }
                 const chunk = input.getChunk();
                 const offset = input.getOffset();
                 const previous = matched;
@@ -110,7 +115,10 @@ export class Boundary {
             }
             // RFC 2046 reserves the boundary prefix at the start of a body line.
             const delimiter = await this.suffix();
-            if (delimiter === undefined) throw new SyntaxError('Invalid multipart delimiter suffix');
+            if (delimiter === 'invalid' || delimiter === 'missing') {
+                const ErrorType = delimiter === 'missing' && !input.reachedEOF ? SyntaxError : RequestSyntaxError;
+                throw new ErrorType('Invalid multipart delimiter suffix');
+            }
             return delimiter;
         };
     }

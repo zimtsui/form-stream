@@ -1,4 +1,11 @@
-export function meter(limit: number): TransformStream<Uint8Array> {
+
+
+/**
+ * @throws {@link StreamSizeError}
+ */
+export type MeterTransformStream = TransformStream<Uint8Array, Uint8Array>;
+
+export function meter(limit: number): MeterTransformStream {
     let size = 0;
     return new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
@@ -6,9 +13,9 @@ export function meter(limit: number): TransformStream<Uint8Array> {
             if (size <= limit)
                 controller.enqueue(chunk);
             else
-                throw new SizeOutOfRangeError(`Stream is required to be at most ${limit} bytes.`);
+                throw new StreamSizeError(`Stream is required to be at most ${limit} bytes.`);
         },
     });
 }
 
-export class SizeOutOfRangeError extends RangeError {}
+export class StreamSizeError extends RangeError {}

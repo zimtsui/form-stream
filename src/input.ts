@@ -17,6 +17,7 @@ export class StreamInput implements Disposable {
     protected offset = 0;
     protected reader?: ReadableStreamDefaultReader<Uint8Array>;
     protected abortListener?: Disposable;
+    protected eof = false;
 
     public constructor(source: ReadableStream<Uint8Array>, protected readonly signal?: AbortSignal) {
         this.reader = source.getReader();
@@ -45,6 +46,10 @@ export class StreamInput implements Disposable {
         return this.chunk[this.offset];
     }
 
+    public get reachedEOF(): boolean {
+        return this.eof;
+    }
+
     public async fill(): Promise<boolean> {
         this.signal?.throwIfAborted();
         this.chunk = empty;
@@ -54,7 +59,11 @@ export class StreamInput implements Disposable {
             const { value, done } = await reader.read();
             // Cancelling the reader resolves a pending read as done.
             this.signal?.throwIfAborted();
-            if (reader !== this.reader || done) break;
+            if (reader !== this.reader) break;
+            if (done) {
+                this.eof = true;
+                break;
+            }
             if (value.byteLength) {
                 this.chunk = value;
                 return true;

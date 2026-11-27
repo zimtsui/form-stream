@@ -8,5 +8,6 @@ export interface Entry {
     chunks: ReadableStream<Uint8Array>;
 }
 
-export class MultipartMixedError extends TypeError {}
-export class ParameterContinuationError extends TypeError {}
+export class RequestSyntaxError extends SyntaxError {}
+export class RequestRangeError extends RangeError {}
+export class RequestTypeError extends TypeError {}

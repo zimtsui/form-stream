@@ -4,20 +4,24 @@ import { Boundary, type Delimiter } from './boundary.ts';
 import { createBodyDecoder } from './encoding.ts';
 import { StreamInput } from './input.ts';
 import { readBoundary, readMetadata } from './mime.ts';
-import type { Entry } from './types.ts';
+import type { Entry, RequestRangeError, RequestSyntaxError, RequestTypeError } from './types.ts';
 
 
 /**
- * If reading an entry's body fails, the next call to `next()` rejects with the
- * same reason and closes the iterator.
- *
+ * @throws {@link RequestSyntaxError}
+ * @throws {@link RequestRangeError}
+ * @throws {@link RequestTypeError}
+ */
+export type ParsingAsyncGenerator = AsyncGenerator<Entry, void, void>;
+
+/**
  * @param body ownership NOT transferred
  */
 export async function* parse(
     contentType: MIMEType,
     body: ReadableStream<Uint8Array>,
     { maxHeaderSize = defaultMaxHeaderSize, signal }: Options = {},
-): AsyncGenerator<Entry, void, void> {
+): ParsingAsyncGenerator {
     if (!Number.isSafeInteger(maxHeaderSize) || maxHeaderSize < 0)
         throw new RangeError('maxHeaderSize must be a non-negative safe integer');
     const boundaryValue = readBoundary(contentType);
@@ -74,6 +78,5 @@ export async function* parse(
 
 export interface Options {
     maxHeaderSize?: number;
-    /** Cancels the input and causes pending and subsequent input reads to fail with the signal's reason. */
     signal?: AbortSignal;
 }
